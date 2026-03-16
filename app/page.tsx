@@ -66,13 +66,16 @@ export default function AFSMPage() {
                 if (!response.ok) throw new Error('Failed to get decision');
                 const decision = await response.json();
 
+                // Safety for triggered_rules
+                const rules = Array.isArray(decision.triggered_rules) ? decision.triggered_rules : [];
+
                 const card = {
                     severity: decision.safety_state === 'CRITICAL' ? 'crit' : decision.safety_state === 'WARNING' ? 'warn' : 'ok',
                     title: decision.recommended_action.replace(/_/g, ' '),
                     body: decision.reasoning_bullets.join('. '),
                     plan: decision.reasoning_bullets.map((b: string) => ({ text: b, pri: decision.safety_state === 'CRITICAL' ? 'high' : 'med' })),
                     command: decision.command,
-                    issues: decision.triggered_rules.map((r: any) => ({ key: r.rule_id, val: r.value, threshold: r.threshold, delta: 'N/A' })),
+                    issues: rules.map((r: any) => ({ key: r.rule_id, val: r.value, threshold: r.threshold, delta: 'N/A' })),
                     risk: decision.risk_score,
                     ts: Date.now()
                 };
@@ -83,11 +86,11 @@ export default function AFSMPage() {
                     renderAgentPanel();
                     addLog(card.severity === 'crit' ? 'crit' : 'warn', 'agent', `Nemotron Decision: ${card.title} - ${card.command}`);
                 } else {
-                    addLog('ok', 'agent', `Nemotron analysis: NOMINAL. All systems clear.`);
+                    addLog('ok', 'agent', `Nemotron analysis: NOMINAL decision received. All systems clear.`);
                 }
 
             } catch (error) {
-                addLog('warn', 'agent', 'Nemotron request failed. Retrying in next cycle.');
+                addLog('warn', 'agent', 'Nemotron request failed. Using local rule-based fallback.');
             }
         }
 
@@ -108,7 +111,7 @@ export default function AFSMPage() {
           </div>
           <div class="agent-card-body">
             ${c.body}
-            <div class="evidence">${c.issues.map((e: any) => `<span>${e.key}: </span><span>${e.val}</span>`).join(' · ')}</div>
+            <div class="evidence">${c.issues.length ? c.issues.map((e: any) => `<span>${e.key}: </span><span>${e.val}</span>`).join(' · ') : 'No violations'}</div>
           </div>
           <div class="cmd-block">
             <div class="cmd-label">DECISION</div>
@@ -152,7 +155,7 @@ export default function AFSMPage() {
         <div class="log-entry ${e.type}">
           <span class="log-time">${e.t}</span>
           <span class="log-badge badge-${e.badge}">${e.badge.toUpperCase()}</span>
-          <span className="log-msg">${e.msg}</span>
+          <span class="log-msg">${e.msg}</span>
         </div>
       `).join('');
             const countEl = document.getElementById('log-count');
@@ -203,7 +206,8 @@ export default function AFSMPage() {
 
         function executeCmd(cmd: string) {
             addLog('cmd', 'cmd', 'Operator executed: ' + cmd);
-            requestNemotronDecision('EXECUTE_COMMAND');
+            // Trigger a new decision following the command execution
+            requestNemotronDecision('COMMAND_EXECUTED');
         }
 
         function inject(type: string) {
@@ -212,7 +216,7 @@ export default function AFSMPage() {
             else if (type === 'battery') { S.battery = 8; S.scenario = 'battery'; }
             else if (type === 'gps') { S.gps = 0.15; S.scenario = 'gps'; }
             else if (type === 'turbulence') { S.stab -= 0.1; S.wind += 10; S.scenario = 'turbulence'; }
-            else if (type === 'engine') { S.temp = 60; S.scenario = 'engine'; }
+            else if (type === 'engine') { S.temp = 60; S.scenario = 'engine'; S.stab -= 0.1; }
             else if (type === 'reset') {
                 Object.assign(S, { battery: 78, wind: 6, alt: 95, stab: 0.96, gps: 0.95, temp: 32, scenario: null, lastIssues: [] });
                 agentCards = [];
@@ -246,7 +250,7 @@ export default function AFSMPage() {
                 riskEl.style.color = r > 0.7 ? 'var(--red)' : r > 0.4 ? 'var(--amber)' : 'var(--green)';
             }
             const ptr = document.getElementById('risk-ptr');
-            if (ptr) ptr.style.left = (r * 100) + '%';
+            if (ptr) ptr.style.left = Math.min(95, Math.max(5, (r * 100))) + '%';
 
             const hstat = document.getElementById('hdr-status');
             if (hstat) {
@@ -304,7 +308,10 @@ export default function AFSMPage() {
             }
             const prevRisk = S.risk;
             S.risk = computeRisk();
-            if ((prevRisk < 0.4 && S.risk >= 0.4) || (prevRisk < 0.78 && S.risk >= 0.78)) requestNemotronDecision('THRESHOLD_CROSSING');
+            // Threshold Crossing triggers
+            if ((prevRisk < 0.4 && S.risk >= 0.4) || (prevRisk < 0.78 && S.risk >= 0.78)) {
+                requestNemotronDecision('THRESHOLD_CROSSING');
+            }
             updateHUD();
         }
 
@@ -345,7 +352,7 @@ export default function AFSMPage() {
         .header-logo { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--green); letter-spacing: 0.15em; }
         .header-stat { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); padding: 0 12px; border-left: 1px solid var(--border); }
         .header-stat .val { color: var(--green); }
-        .left-panel, .right-panel { background: var(--bg2); border-color: var(--border); display: flex; flex-direction: column; }
+        .left-panel, .right-panel { background: var(--bg2); border: 1px solid var(--border); display: flex; flex-direction: column; }
         .left-panel { border-right-width: 1px; border-right-style: solid; }
         .right-panel { border-left-width: 1px; border-left-style: solid; }
         .panel-header { font-family: var(--mono); font-size: 9px; padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-dim); }
@@ -359,11 +366,10 @@ export default function AFSMPage() {
         .risk-score-big { font-family: var(--mono); font-size: 32px; font-weight: 500; }
         .risk-bar-track { height: 4px; background: linear-gradient(to right, #00ffb4, #ffb700, #ff4444); position: relative; margin-top: 8px; }
         .risk-pointer { position: absolute; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: #fff; border: 2px solid var(--bg); transform: translateX(-50%); }
-        .triggers-section { padding: 10px; }
-        .trigger-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+        .trigger-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 10px; }
         .trigger-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 7px; font-size: 9px; cursor: pointer; text-align: left; }
-        .trigger-reset { width: 100%; margin-top: 5px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); padding: 6px; font-size: 9px; cursor: pointer; }
-        .flight-view { flex: 1; min-height: 0; background: #000; position: relative; }
+        .trigger-reset { width: calc(100% - 20px); margin: 0 10px 10px 10px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); padding: 6px; font-size: 9px; cursor: pointer; }
+        .flight-view { flex: 1; background: #000; position: relative; }
         canvas { width: 100%; height: 100%; display: block; }
         .log-section { height: 200px; display: flex; flex-direction: column; background: var(--bg2); border-top: 1px solid var(--border); }
         .log-body { flex: 1; overflow-y: auto; padding: 10px; font-family: var(--mono); font-size: 10px; }
@@ -373,92 +379,58 @@ export default function AFSMPage() {
         .agent-card.warn { border-color: var(--amber); }
         .agent-card-header { display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 5px; font-family: var(--mono); }
         .agent-card-body { font-size: 11px; line-height: 1.4; }
+        .cmd-block { background: var(--bg); margin-top: 8px; padding: 6px; font-family: var(--mono); font-size: 9px; color: var(--blue); }
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 2000; }
         .modal-overlay.active { display: flex; }
         .modal { background: var(--bg2); border: 1px solid var(--border2); width: 450px; padding: 20px; color: var(--text); }
         .modal-header { display: flex; justify-content: space-between; margin-bottom: 15px; }
         .cmd-execute-btn { background: var(--blue); color: #000; border: none; padding: 5px 15px; cursor: pointer; font-weight: 600; font-size: 10px; }
         .pulse-dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; }
-        .pulse-dot.red { background: var(--red); }
-        .pulse-dot.amber { background: var(--amber); }
       ` }} />
 
             <div className="layout">
                 <header className="header">
                     <span className="header-logo">AFSM v2.2</span>
                     <div style={{ flex: 1 }}></div>
-                    <div className="header-stat"><div id="hdr-dot" className="pulse-dot"></div><span>STATUS</span><span id="hdr-status" className="val">NOMINAL</span></div>
-                    <div className="header-stat"><span>UPTIME</span><span id="hdr-time" className="val">00:00</span></div>
-                    <div className="header-stat"><span>EVENTS</span><span id="hdr-events" className="val">0</span></div>
+                    <div className="header-stat"><div id="hdr-dot" className="pulse-dot"></div><span>STATUS</span><span id="hdr-status" className="val" style={{ marginLeft: 5 }}>NOMINAL</span></div>
+                    <div className="header-stat"><span>UPTIME</span><span id="hdr-time" className="val" style={{ marginLeft: 5 }}>00:00</span></div>
+                    <div className="header-stat"><span>EVENTS</span><span id="hdr-events" className="val" style={{ marginLeft: 5 }}>0</span></div>
                 </header>
 
                 <div className="left-panel">
                     <div className="panel-header">TELEMETRY</div>
                     <div className="metrics-section">
-                        <div className="metric-card" id="mc-battery">
-                            <div className="metric-label">Battery</div>
-                            <div className="metric-value" id="mv-battery">78%</div>
-                            <div className="metric-bar"><div className="metric-fill" id="mf-battery" style={{ width: '78%', background: 'var(--green)' }}></div></div>
-                        </div>
-                        <div className="metric-card" id="mc-wind">
-                            <div className="metric-label">Wind</div>
-                            <div className="metric-value" id="mv-wind">6.0 m/s</div>
-                            <div className="metric-bar"><div className="metric-fill" id="mf-wind" style={{ width: '20%', background: 'var(--green)' }}></div></div>
-                        </div>
-                        <div className="metric-card" id="mc-alt">
-                            <div className="metric-label">Altitude</div>
-                            <div className="metric-value" id="mv-alt">95m</div>
-                            <div className="metric-bar"><div className="metric-fill" id="mf-alt" style={{ width: '63%', background: 'var(--blue)' }}></div></div>
-                        </div>
-                        <div className="metric-card" id="mc-stab">
-                            <div className="metric-label">Stability</div>
-                            <div className="metric-value" id="mv-stab">0.96</div>
-                            <div className="metric-bar"><div className="metric-fill" id="mf-stab" style={{ width: '96%', background: 'var(--green)' }}></div></div>
-                        </div>
+                        <div className="metric-card" id="mc-battery"><div className="metric-label">Battery</div><div className="metric-value" id="mv-battery">78%</div><div className="metric-bar"><div className="metric-fill" id="mf-battery"></div></div></div>
+                        <div className="metric-card" id="mc-wind"><div className="metric-label">Wind</div><div className="metric-value" id="mv-wind">6.0 m/s</div><div className="metric-bar"><div className="metric-fill" id="mf-wind"></div></div></div>
+                        <div className="metric-card" id="mc-alt"><div className="metric-label">Altitude</div><div className="metric-value" id="mv-alt">95m</div><div className="metric-bar"><div className="metric-fill" id="mf-alt"></div></div></div>
+                        <div className="metric-card" id="mc-stab"><div className="metric-label">Stability</div><div className="metric-value" id="mv-stab">0.96</div><div className="metric-bar"><div className="metric-fill" id="mf-stab"></div></div></div>
                     </div>
-                    <div className="risk-section">
-                        <div className="risk-score-big" id="risk-big">0.08</div>
-                        <div className="risk-bar-track"><div className="risk-pointer" id="risk-ptr" style={{ left: '8%' }}></div></div>
-                    </div>
-                    <div className="triggers-section">
-                        <div className="trigger-grid">
-                            <button className="trigger-btn">Wind Spike</button>
-                            <button className="trigger-btn">Bird Strike</button>
-                            <button className="trigger-btn">Batt Drop</button>
-                            <button className="trigger-btn">GPS Jam</button>
-                            <button className="trigger-btn">Turbulence</button>
-                            <button className="trigger-btn">Engine Vibe</button>
-                        </div>
-                        <button className="trigger-reset">RESET SYSTEMS</button>
-                    </div>
-                    <div style={{ flex: 1, padding: '10px' }}>
-                        <div className="panel-header" style={{ padding: '0 0 5px 0', border: 0 }}>FLIGHT PATH</div>
-                        <canvas id="flightCanvas" style={{ height: '120px', background: '#000' }}></canvas>
-                    </div>
+                    <div className="risk-section"><div className="risk-score-big" id="risk-big">0.08</div><div className="risk-bar-track"><div className="risk-pointer" id="risk-ptr"></div></div></div>
+                    <div className="trigger-grid"><button className="trigger-btn">Wind Spike</button><button className="trigger-btn">Bird Strike</button><button className="trigger-btn">Batt Drop</button><button className="trigger-btn">GPS Jam</button><button className="trigger-btn">Turbulence</button><button className="trigger-btn">Engine Vibe</button></div>
+                    <button className="trigger-reset">RESET SYSTEMS</button>
+                    <div className="panel-header">FLIGHT PATH</div>
+                    <div style={{ flex: 1, padding: 10 }}><canvas id="flightCanvas"></canvas></div>
                 </div>
 
-                <div className="center-panel" style={{ display: 'flex', flexDirection: 'column' }}>
+                <div className="center-panel">
                     <div className="flight-view"><canvas id="mainCanvas"></canvas></div>
                     <div className="log-section">
-                        <div className="panel-header">DECISION LOG <span id="log-count" style={{ float: 'right' }}>0 entries</span></div>
+                        <div className="panel-header">DECISION LOG</div>
                         <div className="log-body" id="log-body"></div>
                     </div>
                 </div>
 
                 <div className="right-panel">
-                    <div className="panel-header">NEMOTRON AGENT</div>
+                    <div className="panel-header" style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span>NEMOTRON SAFETY AGENT</span>
+                        <span style={{ fontSize: '7px', color: 'var(--green-dim)', letterSpacing: '0.05em' }}>MODEL: nvidia nemotron nano 9b v2</span>
+                    </div>
                     <div className="agent-section" id="agent-section"></div>
                 </div>
             </div>
 
             <div className="modal-overlay" id="modal-overlay">
-                <div className="modal">
-                    <div className="modal-header">
-                        <div id="modal-title" style={{ fontWeight: 600 }}>Analysis</div>
-                        <button className="modal-close" style={{ background: 0, border: 0, color: '#fff', cursor: 'pointer' }}>✕</button>
-                    </div>
-                    <div id="modal-body" style={{ fontSize: '12px', lineHeight: 1.5 }}></div>
-                </div>
+                <div className="modal"><div className="modal-header"><div id="modal-title" style={{ fontWeight: 600 }}>Analysis</div><button className="modal-close" style={{ background: 0, border: 0, color: '#fff', cursor: 'pointer' }}>✕</button></div><div id="modal-body"></div></div>
             </div>
         </>
     );
