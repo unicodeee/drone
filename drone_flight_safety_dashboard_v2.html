@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AFSM — Autonomous Flight Safety Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080c10;
+  --bg2: #0d1318;
+  --bg3: #131a21;
+  --border: rgba(0,255,180,0.12);
+  --border2: rgba(0,255,180,0.22);
+  --green: #00ffb4;
+  --green-dim: rgba(0,255,180,0.15);
+  --amber: #ffb700;
+  --amber-dim: rgba(255,183,0,0.15);
+  --red: #ff4444;
+  --red-dim: rgba(255,68,68,0.15);
+  --blue: #4db8ff;
+  --blue-dim: rgba(77,184,255,0.12);
+  --text: #c8d8e8;
+  --text-dim: #5a7080;
+  --text-bright: #e8f4ff;
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'IBM Plex Sans', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* SCAN LINE EFFECT */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+  pointer-events: none;
+  z-index: 1000;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 260px 1fr 300px;
+  grid-template-rows: 48px 1fr;
+  height: 100vh;
+  gap: 0;
+}
+
+/* HEADER */
+.header {
+  grid-column: 1 / -1;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 16px;
+}
+.header-logo {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--green);
+  letter-spacing: 0.15em;
+}
+.header-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+}
+.header-spacer { flex: 1; }
+.header-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
+}
+.header-stat .val {
+  color: var(--green);
+  font-weight: 500;
+}
+.pulse-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse-anim 1.5s infinite;
+}
+@keyframes pulse-anim {
+  0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0,255,180,0.4); }
+  50% { opacity: 0.6; box-shadow: 0 0 0 4px rgba(0,255,180,0); }
+}
+.pulse-dot.amber { background: var(--amber); animation-name: pulse-amber; }
+@keyframes pulse-amber { 0%,100%{box-shadow:0 0 0 0 rgba(255,183,0,0.4);} 50%{box-shadow:0 0 0 4px rgba(255,183,0,0);} }
+.pulse-dot.red { background: var(--red); animation-name: pulse-red; }
+@keyframes pulse-red { 0%,100%{box-shadow:0 0 0 0 rgba(255,68,68,0.5);} 50%{box-shadow:0 0 0 6px rgba(255,68,68,0);} }
+
+/* LEFT PANEL */
+.left-panel {
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* CENTER PANEL */
+.center-panel {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* RIGHT PANEL */
+.right-panel {
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--text-dim);
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel-header .accent { color: var(--green); }
+
+/* METRIC CARDS */
+.metrics-section {
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.metric-card {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+.metric-card:hover { border-color: var(--border2); }
+.metric-card::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--green);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.4s ease;
+}
+.metric-card.active::after { transform: scaleX(1); }
+.metric-card.warn::after { background: var(--amber); transform: scaleX(1); }
+.metric-card.crit::after { background: var(--red); transform: scaleX(1); }
+
+.metric-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.metric-value {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-bright);
+  line-height: 1;
+}
+.metric-unit {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-left: 2px;
+}
+.metric-bar {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  margin-top: 6px;
+}
+.metric-fill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.5s ease, background 0.5s;
+}
+.metric-trend {
+  font-family: var(--mono);
+  font-size: 8px;
+  margin-top: 3px;
+  color: var(--text-dim);
+}
+
+/* RISK GAUGE */
+.risk-section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.risk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.risk-score-big {
+  font-family: var(--mono);
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1;
+  transition: color 0.5s;
+}
+.risk-label-col {
+  flex: 1;
+}
+.risk-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  margin-bottom: 3px;
+}
+.risk-bar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, #00ffb4 0%, #ffb700 50%, #ff4444 100%);
+  position: relative;
+  margin-top: 6px;
+}
+.risk-pointer {
+  position: absolute;
+  top: -3px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid var(--bg);
+  transform: translateX(-50%);
+  transition: left 0.5s ease;
+  box-shadow: 0 0 6px rgba(255,255,255,0.5);
+}
+
+/* MODE BADGE */
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 3px 8px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+.mode-advisory { border-color: var(--blue); color: var(--blue); background: var(--blue-dim); }
+.mode-autonomous { border-color: var(--red); color: var(--red); background: var(--red-dim); animation: flash-border 0.6s infinite; }
+@keyframes flash-border { 0%,100%{border-color:var(--red);} 50%{border-color:rgba(255,68,68,0.3);} }
+
+/* SCENARIO TRIGGERS */
+.triggers-section {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.triggers-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.trigger-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.trigger-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 7px 8px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text);
+  text-align: left;
+  transition: all 0.15s;
+  line-height: 1.4;
+}
+.trigger-btn:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: var(--amber-dim);
+}
+.trigger-btn:active { transform: scale(0.97); }
+.trigger-btn.danger:hover {
+  border-color: var(--red);
+  color: var(--red);
+  background: var(--red-dim);
+}
+.trigger-btn .t-name { font-weight: 500; display: block; }
+.trigger-btn .t-effect { opacity: 0.5; font-size: 8px; }
+.trigger-reset {
+  grid-column: span 2;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+  letter-spacing: 0.1em;
+}
+.trigger-reset:hover { border-color: var(--green); color: var(--green); }
+
+/* FLIGHT MAP */
+.map-section {
+  flex: 1;
+  padding: 10px;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.map-canvas-wrap {
+  flex: 1;
+  position: relative;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+#flightCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* CENTER: FLIGHT VIEW + LOG */
+.flight-view {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+#mainCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* AGENT LOG */
+.log-section {
+  height: 220px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.log-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.log-body::-webkit-scrollbar { width: 3px; }
+.log-body::-webkit-scrollbar-track { background: var(--bg2); }
+.log-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.log-entry {
+  display: flex;
+  gap: 8px;
+  padding: 4px 12px;
+  border-left: 2px solid transparent;
+  transition: background 0.2s;
+  cursor: pointer;
+  animation: log-slide-in 0.3s ease;
+}
+@keyframes log-slide-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+.log-entry:hover { background: rgba(255,255,255,0.03); }
+.log-entry.ok { border-left-color: var(--green); }
+.log-entry.warn { border-left-color: var(--amber); }
+.log-entry.crit { border-left-color: var(--red); }
+.log-entry.cmd { border-left-color: var(--blue); }
+.log-time { color: var(--text-dim); min-width: 52px; flex-shrink: 0; font-size: 10px; }
+.log-badge {
+  font-size: 8px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  align-self: flex-start;
+  flex-shrink: 0;
+  margin-top: 1px;
+  min-width: 44px;
+  text-align: center;
+}
+.badge-ok { background: rgba(0,255,180,0.15); color: var(--green); }
+.badge-warn { background: rgba(255,183,0,0.15); color: var(--amber); }
+.badge-crit { background: rgba(255,68,68,0.15); color: var(--red); }
+.badge-cmd { background: rgba(77,184,255,0.15); color: var(--blue); }
+.badge-agent { background: rgba(180,100,255,0.15); color: #c87eff; }
+.log-msg { flex: 1; color: var(--text); line-height: 1.5; }
+
+/* Highlighted keywords in log */
+.kw-cmd { color: var(--blue); font-weight: 500; }
+.kw-warn { color: var(--amber); font-weight: 500; }
+.kw-crit { color: var(--red); font-weight: 500; }
+.kw-val { color: var(--green); font-weight: 500; }
+.kw-agent { color: #c87eff; font-weight: 500; }
+
+/* RIGHT: AGENT PANEL */
+.agent-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+.agent-section::-webkit-scrollbar { width: 3px; }
+.agent-section::-webkit-scrollbar-thumb { background: var(--border2); }
+
+.agent-card {
+  margin: 8px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.agent-card:hover { border-color: var(--border2); }
+.agent-card.warn { border-color: rgba(255,183,0,0.3); }
+.agent-card.crit { border-color: rgba(255,68,68,0.4); animation: card-pulse 1.5s infinite; }
+@keyframes card-pulse { 0%,100%{border-color:rgba(255,68,68,0.4);} 50%{border-color:rgba(255,68,68,0.1);} }
+
+.agent-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.agent-card-icon { font-size: 14px; }
+.agent-card-title { flex: 1; font-weight: 500; }
+.agent-card-score {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+.score-ok { background: var(--green-dim); color: var(--green); }
+.score-warn { background: var(--amber-dim); color: var(--amber); }
+.score-crit { background: var(--red-dim); color: var(--red); }
+
+.agent-card-body { padding: 8px 10px; font-size: 12px; line-height: 1.6; color: var(--text); }
+.agent-card-body .evidence {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.agent-card-body .evidence span { color: var(--amber); }
+.agent-card .cmd-block {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 7px 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--blue);
+}
+.agent-card .cmd-block .cmd-label { color: var(--text-dim); font-size: 8px; letter-spacing: 0.1em; margin-bottom: 3px; }
+
+/* POPUP MODAL */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 500;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  width: 580px;
+  max-height: 80vh;
+  overflow-y: auto;
+  font-family: var(--mono);
+  animation: modal-in 0.2s ease;
+  box-shadow: 0 0 40px rgba(0,255,180,0.08);
+}
+@keyframes modal-in { from { opacity:0; transform: scale(0.96) translateY(10px); } to { opacity:1; transform:none; } }
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title { font-size: 12px; font-weight: 500; color: var(--text-bright); flex: 1; }
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0;
+  font-family: var(--mono);
+}
+.modal-close:hover { color: var(--text); }
+.modal-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.modal-section:last-child { border-bottom: none; }
+.modal-section-title {
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.modal-text { font-size: 11px; line-height: 1.7; color: var(--text); font-family: var(--sans); }
+
+.evidence-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+}
+.evidence-row:last-child { border-bottom: none; }
+.ev-metric { color: var(--text-dim); min-width: 80px; }
+.ev-val { color: var(--amber); font-weight: 500; min-width: 60px; }
+.ev-threshold { color: var(--text-dim); min-width: 70px; }
+.ev-delta { color: var(--red); font-weight: 500; }
+.ev-delta.ok { color: var(--green); }
+
+.plan-step {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  align-items: flex-start;
+}
+.plan-step:last-child { border-bottom: none; }
+.plan-num {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--blue);
+  min-width: 20px;
+  margin-top: 2px;
+}
+.plan-text { flex: 1; color: var(--text); line-height: 1.5; font-family: var(--sans); }
+.plan-priority {
+  font-size: 8px;
+  padding: 2px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.pri-high { background: var(--red-dim); color: var(--red); }
+.pri-med { background: var(--amber-dim); color: var(--amber); }
+.pri-low { background: var(--green-dim); color: var(--green); }
+
+.cmd-action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--blue-dim);
+  border-radius: 3px;
+  margin-top: 6px;
+  font-size: 10px;
+}
+.cmd-icon { color: var(--blue); }
+.cmd-text { flex: 1; color: var(--blue); }
+.cmd-execute-btn {
+  background: var(--blue);
+  color: var(--bg);
+  border: none;
+  border-radius: 2px;
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  cursor: pointer;
+  letter-spacing: 0.1em;
+  transition: opacity 0.15s;
+}
+.cmd-execute-btn:hover { opacity: 0.85; }
+
+/* SCROLLBAR GLOBAL */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- HEADER -->
+  <header class="header">
+    <span class="header-logo">AFSM v2.1</span>
+    <span class="header-sub">AUTONOMOUS FLIGHT SAFETY MONITOR</span>
+    <div class="header-spacer"></div>
+    <div class="header-stat"><span class="pulse-dot" id="hdr-dot"></span><span>STATUS</span><span class="val" id="hdr-status">NOMINAL</span></div>
+    <div class="header-stat"><span>DRONE</span><span class="val">DRONE_001</span></div>
+    <div class="header-stat"><span>UPTIME</span><span class="val" id="hdr-time">00:00</span></div>
+    <div class="header-stat"><span>EVENTS</span><span class="val" id="hdr-events">0</span></div>
+  </header>
+
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+    <div class="panel-header"><span class="accent">▣</span> TELEMETRY · LIVE</div>
+
+    <div class="metrics-section">
+      <div class="metric-card" id="mc-battery" onclick="openMetricModal('battery')">
+        <div class="metric-label">Battery</div>
+        <div class="metric-value" id="mv-battery">78<span class="metric-unit">%</span></div>
+        <div class="metric-bar"><div class="metric-fill" id="mf-battery" style="width:78%;background:var(--green)"></div></div>
+        <div class="metric-trend" id="mt-battery">▼ draining</div>
+      </div>
+      <div class="metric-card" id="mc-wind" onclick="openMetricModal('wind')">
+        <div class="metric-label">Wind</div>
+        <div class="metric-value" id="mv-wind">6<span class="metric-unit">m/s</span></div>
+        <div class="metric-bar"><div class="metric-fill" id="mf-wind" style="width:20%;background:var(--green)"></div></div>
+        <div class="metric-trend" id="mt-wind">stable</div>
+      </div>
+      <div class="metric-card" id="mc-alt" onclick="openMetricModal('alt')">
+        <div class="metric-label">Altitude</div>
+        <div class="metric-value" id="mv-alt">95<span class="metric-unit">m</span></div>
+        <div class="metric-bar"><div class="metric-fill" id="mf-alt" style="width:63%;background:var(--blue)"></div></div>
+        <div class="metric-trend" id="mt-alt">holding</div>
+      </div>
+      <div class="metric-card" id="mc-stab" onclick="openMetricModal('stab')">
+        <div class="metric-label">Wing Stab</div>
+        <div class="metric-value" id="mv-stab">0.96</div>
+        <div class="metric-bar"><div class="metric-fill" id="mf-stab" style="width:96%;background:var(--green)"></div></div>
+        <div class="metric-trend" id="mt-stab">nominal</div>
+      </div>
+      <div class="metric-card" id="mc-gps" onclick="openMetricModal('gps')">
+        <div class="metric-label">GPS Sig</div>
+        <div class="metric-value" id="mv-gps">0.95</div>
+        <div class="metric-bar"><div class="metric-fill" id="mf-gps" style="width:95%;background:var(--green)"></div></div>
+        <div class="metric-trend" id="mt-gps">strong</div>
+      </div>
+      <div class="metric-card" id="mc-temp" onclick="openMetricModal('temp')">
+        <div class="metric-label">Temp</div>
+        <div class="metric-value" id="mv-temp">32<span class="metric-unit">°C</span></div>
+        <div class="metric-bar"><div class="metric-fill" id="mf-temp" style="width:40%;background:var(--amber)"></div></div>
+        <div class="metric-trend" id="mt-temp">normal</div>
+      </div>
+    </div>
+
+    <div class="risk-section">
+      <div class="risk-row">
+        <div class="risk-score-big" id="risk-big" style="color:var(--green)">0.08</div>
+        <div class="risk-label-col">
+          <div class="risk-status"><span id="risk-status-text" style="color:var(--green)">SAFE</span></div>
+          <div id="mode-badge" class="mode-badge mode-advisory"><span class="pulse-dot" id="mode-dot"></span> <span id="mode-text">ADVISORY MODE</span></div>
+          <div style="font-family:var(--mono);font-size:8px;color:var(--text-dim);margin-top:4px">CONF: <span id="conf-val" style="color:var(--text)">94%</span></div>
+        </div>
+      </div>
+      <div class="risk-bar-track">
+        <div class="risk-pointer" id="risk-ptr" style="left:8%"></div>
+      </div>
+    </div>
+
+    <div class="triggers-section">
+      <div class="triggers-label">INJECT DISTURBANCE</div>
+      <div class="trigger-grid">
+        <button class="trigger-btn" onclick="inject('wind')"><span class="t-name">⟳ Wind Spike</span><span class="t-effect">→ 26 m/s gust</span></button>
+        <button class="trigger-btn danger" onclick="inject('bird')"><span class="t-name">✕ Bird Strike</span><span class="t-effect">→ stab drop</span></button>
+        <button class="trigger-btn danger" onclick="inject('battery')"><span class="t-name">⚡ Batt Drop</span><span class="t-effect">→ critical 8%</span></button>
+        <button class="trigger-btn" onclick="inject('gps')"><span class="t-name">⊘ GPS Jam</span><span class="t-effect">→ signal loss</span></button>
+        <button class="trigger-btn" onclick="inject('turbulence')"><span class="t-name">≈ Turbulence</span><span class="t-effect">→ multi-axis</span></button>
+        <button class="trigger-btn danger" onclick="inject('engine')"><span class="t-name">⚠ Engine Vibe</span><span class="t-effect">→ mech fault</span></button>
+      </div>
+      <button class="trigger-reset" onclick="inject('reset')">↺ RESET ALL SYSTEMS</button>
+    </div>
+
+    <div class="map-section">
+      <div class="panel-header" style="padding:6px 14px"><span class="accent">◎</span> FLIGHT PATH</div>
+      <div class="map-canvas-wrap">
+        <canvas id="flightCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER PANEL -->
+  <div class="center-panel">
+    <div class="panel-header"><span class="accent">◈</span> LIVE FLIGHT SIMULATION</div>
+    <div class="flight-view">
+      <canvas id="mainCanvas"></canvas>
+    </div>
+    <div class="log-section">
+      <div class="panel-header">
+        <span class="accent">≡</span> AGENT DECISION LOG
+        <span style="flex:1"></span>
+        <span style="font-size:8px;color:var(--text-dim)" id="log-count">0 entries</span>
+      </div>
+      <div class="log-body" id="log-body"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <div class="panel-header"><span class="accent">◆</span> AI FLIGHT SAFETY AGENT</div>
+    <div class="agent-section" id="agent-section">
+      <div style="padding:20px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text-dim)">
+        Agent monitoring...<br><br>
+        <div class="pulse-dot" style="margin:0 auto"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-title">Analysis</div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-top:3px" id="modal-sub"></div>
+      </div>
+      <button class="modal-close" onclick="document.getElementById('modal-overlay').classList.remove('active')">✕</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let S = {
+  battery: 78, wind: 6, alt: 95, stab: 0.96, gps: 0.95, temp: 32,
+  risk: 0.08, scenario: null, tick: 0,
+  x: 0, y: 0, vx: 1.2, vy: 0.4, heading: 0,
+  startTime: Date.now(), totalEvents: 0,
+  lastIssues: []
+};
+let logEntries = [];
+let flightPath = [];
+let histRisk = Array(80).fill(0.08);
+let histBatt = [];
+let agentCards = [];
+let lastRisk = 0.08;
+let alertQueue = [];
+
+// ─── RISK ENGINE ──────────────────────────────────────────────────────────────
+function computeRisk() {
+  let r = 0, issues = [];
+  if (S.battery < 8) { r += 0.5; issues.push({key:'BATTERY_CRITICAL', val:S.battery.toFixed(0)+'%', threshold:'10%', delta:'+'+((10-S.battery).toFixed(1))+'%'}); }
+  else if (S.battery < 20) { r += 0.28; issues.push({key:'BATTERY_LOW', val:S.battery.toFixed(0)+'%', threshold:'20%', delta:'+'+((20-S.battery).toFixed(1))+'%'}); }
+  if (S.wind > 24) { r += 0.38; issues.push({key:'WIND_CRITICAL', val:S.wind.toFixed(1)+'m/s', threshold:'24m/s', delta:'+'+(S.wind-24).toFixed(1)}); }
+  else if (S.wind > 16) { r += 0.22; issues.push({key:'HIGH_WIND', val:S.wind.toFixed(1)+'m/s', threshold:'16m/s', delta:'+'+(S.wind-16).toFixed(1)}); }
+  if (S.stab < 0.62) { r += 0.35; issues.push({key:'WING_INSTABILITY', val:S.stab.toFixed(2), threshold:'0.75', delta:(S.stab-0.75).toFixed(2)}); }
+  else if (S.stab < 0.82) { r += 0.18; issues.push({key:'REDUCED_STABILITY', val:S.stab.toFixed(2), threshold:'0.82', delta:(S.stab-0.82).toFixed(2)}); }
+  if (S.gps < 0.25) { r += 0.28; issues.push({key:'GPS_SIGNAL_LOSS', val:S.gps.toFixed(2), threshold:'0.40', delta:(S.gps-0.40).toFixed(2)}); }
+  if (S.temp > 52) { r += 0.15; issues.push({key:'THERMAL_WARNING', val:S.temp.toFixed(0)+'°C', threshold:'50°C', delta:'+'+((S.temp-50).toFixed(0))+'°'}); }
+  S.lastIssues = issues;
+  return Math.min(1, Math.max(0, r + (Math.random()*0.015 - 0.0075)));
+}
+
+// ─── AGENT INTELLIGENCE ───────────────────────────────────────────────────────
+function generateAgentCard(risk, issues) {
+  if (issues.length === 0) return null;
+  const primary = issues[0];
+  let title, body, plan, command, severity;
+  if (risk > 0.78) {
+    severity = 'crit';
+    if (primary.key.includes('BATTERY')) {
+      title = 'CRITICAL: Power Failure Imminent';
+      body = `Battery at <span class="kw-crit">${primary.val}</span> — estimated <span class="kw-val">${Math.max(1, Math.round(S.battery/0.8))} seconds</span> of flight remaining. Immediate <span class="kw-cmd">RETURN_TO_HOME</span> required to prevent total power loss.`;
+      plan = [
+        {text:'Execute RETURN_TO_HOME command immediately', pri:'high'},
+        {text:'Reduce payload throttle by 30% to extend range', pri:'high'},
+        {text:'Alert ground crew for emergency retrieval', pri:'med'},
+        {text:'Log incident for post-flight battery audit', pri:'low'},
+      ];
+      command = 'CMD: RETURN_TO_HOME — priority=CRITICAL reason=BATTERY_CRITICAL';
+    } else if (primary.key.includes('WIND')) {
+      title = 'CRITICAL: Wind Exceeds Safety Threshold';
+      body = `Wind speed <span class="kw-crit">${primary.val}</span> exceeds structural limit. Sustained exposure risks <span class="kw-warn">attitude loss</span> and <span class="kw-warn">rotor stall</span>. Initiating autonomous descent.`;
+      plan = [
+        {text:'Descend to <40m altitude — wind speed lower at ground level', pri:'high'},
+        {text:'Orient nose into wind to reduce drag coefficient', pri:'high'},
+        {text:'Reduce forward velocity to 0 m/s — hover stabilization', pri:'med'},
+        {text:'Monitor for gust spikes >2 m/s variance', pri:'low'},
+      ];
+      command = 'CMD: EMERGENCY_DESCENT alt=40m mode=HEADWIND_ORIENT';
+    } else {
+      title = 'CRITICAL: Structural Integrity Compromised';
+      body = `Wing stability at <span class="kw-crit">${primary.val}</span> — <span class="kw-warn">possible bird strike</span> or rotor blade damage. Flight envelope severely reduced. <span class="kw-cmd">STABILIZE</span> and land immediately.`;
+      plan = [
+        {text:'Engage autopilot stabilization routine', pri:'high'},
+        {text:'Reduce airspeed to minimum controllable', pri:'high'},
+        {text:'Find nearest clear landing zone within 200m', pri:'med'},
+        {text:'Initiate slow controlled descent — 1m/s rate', pri:'med'},
+      ];
+      command = 'CMD: EMERGENCY_LAND mode=SLOW_DESCENT vspeed=1.0';
+    }
+  } else if (risk > 0.38) {
+    severity = 'warn';
+    title = 'WARNING: ' + primary.key.replace(/_/g,' ');
+    body = `Detected <span class="kw-warn">${primary.key.replace(/_/g,' ')}</span> — current value <span class="kw-val">${primary.val}</span> vs threshold <span class="kw-warn">${primary.threshold}</span>. Deviation: <span class="kw-crit">${primary.delta}</span>. Risk elevation in ${Math.round(60/(risk*10))}s without intervention.`;
+    plan = [
+      {text:'Reduce operational envelope — lower speed and altitude', pri:'med'},
+      {text:`Monitor ${primary.key} trend over next 30 seconds`, pri:'med'},
+      {text:'Prepare emergency procedure if condition worsens', pri:'low'},
+    ];
+    command = 'CMD: ADVISORY reduce_envelope=true monitor='+primary.key;
+  } else {
+    return null;
+  }
+
+  return { severity, title, body, plan, command, issues, risk, ts: Date.now() };
+}
+
+// ─── RENDER AGENT PANEL ────────────────────────────────────────────────────────
+function renderAgentPanel() {
+  const sec = document.getElementById('agent-section');
+  if (agentCards.length === 0) {
+    sec.innerHTML = `<div style="padding:20px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text-dim)">Agent monitoring...<br><br><div class="pulse-dot" style="margin:0 auto"></div></div>`;
+    return;
+  }
+  sec.innerHTML = agentCards.slice(-4).reverse().map((c, i) => `
+    <div class="agent-card ${c.severity}" onclick="openAgentModal(${agentCards.length - 1 - i})">
+      <div class="agent-card-header">
+        <span class="agent-card-icon">${c.severity==='crit'?'⚠':'▲'}</span>
+        <span class="agent-card-title">${c.title}</span>
+        <span class="agent-card-score ${c.severity==='crit'?'score-crit':c.severity==='warn'?'score-warn':'score-ok'}">${c.risk.toFixed(2)}</span>
+      </div>
+      <div class="agent-card-body">
+        ${c.body}
+        <div class="evidence">${c.issues.map(e=>`<span>${e.key}: </span><span>${e.val}</span>`).join(' · ')}</div>
+      </div>
+      <div class="cmd-block">
+        <div class="cmd-label">DECISION</div>
+        ${c.command}
+      </div>
+    </div>
+  `).join('');
+}
+
+// ─── LOG SYSTEM ───────────────────────────────────────────────────────────────
+function kw(text) {
+  return text
+    .replace(/\b(RETURN_TO_HOME|EMERGENCY_DESCENT|EMERGENCY_LAND|ADVISORY|STABILIZE)\b/g, '<span class="kw-cmd">$1</span>')
+    .replace(/\b(CRITICAL|FAILURE|COMPROMISED|LOSS|FAULT)\b/g, '<span class="kw-crit">$1</span>')
+    .replace(/\b(WARNING|ELEVATED|REDUCED|HIGH|EXCEEDED)\b/g, '<span class="kw-warn">$1</span>')
+    .replace(/\b(\d+\.?\d*\s*(?:m\/s|%|°C|m))\b/g, '<span class="kw-val">$1</span>')
+    .replace(/\b(Agent|Supervisor|Battery Agent|Wind Agent|Stability Agent|GPS Agent)\b/g, '<span class="kw-agent">$1</span>');
+}
+
+function addLog(type, badge, msg) {
+  const now = new Date();
+  const t = `${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}.${String(now.getMilliseconds()).slice(0,1)}`;
+  logEntries.unshift({ type, badge, msg: kw(msg), t });
+  if (logEntries.length > 120) logEntries.pop();
+  S.totalEvents++;
+  document.getElementById('hdr-events').textContent = S.totalEvents;
+  renderLog();
+}
+
+function renderLog() {
+  const body = document.getElementById('log-body');
+  body.innerHTML = logEntries.slice(0, 50).map(e => `
+    <div class="log-entry ${e.type}">
+      <span class="log-time">${e.t}</span>
+      <span class="log-badge badge-${e.badge}">${e.badge.toUpperCase()}</span>
+      <span class="log-msg">${e.msg}</span>
+    </div>
+  `).join('');
+  document.getElementById('log-count').textContent = logEntries.length + ' entries';
+}
+
+// ─── MODAL SYSTEM ─────────────────────────────────────────────────────────────
+function openAgentModal(idx) {
+  const c = agentCards[idx];
+  if (!c) return;
+  const overlay = document.getElementById('modal-overlay');
+  document.getElementById('modal-title').textContent = c.title;
+  document.getElementById('modal-sub').textContent = `Risk score: ${c.risk.toFixed(3)} · ${new Date(c.ts).toLocaleTimeString()}`;
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-section">
+      <div class="modal-section-title">Agent Analysis</div>
+      <div class="modal-text">${c.body.replace(/<span[^>]*>/g,'').replace(/<\/span>/g,'')}</div>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Evidence from Telemetry</div>
+      ${c.issues.map(e=>`
+        <div class="evidence-row">
+          <span class="ev-metric">${e.key}</span>
+          <span class="ev-val">${e.val}</span>
+          <span class="ev-threshold">thresh: ${e.threshold}</span>
+          <span class="ev-delta ${parseFloat(e.delta)>0?'':'ok'}">${e.delta}</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Intervention Plan</div>
+      ${c.plan.map((p,i)=>`
+        <div class="plan-step">
+          <span class="plan-num">0${i+1}</span>
+          <span class="plan-text">${p.text}</span>
+          <span class="plan-priority pri-${p.pri}">${p.pri.toUpperCase()}</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Command Decision</div>
+      <div class="cmd-action-row">
+        <span class="cmd-icon">▶</span>
+        <span class="cmd-text">${c.command}</span>
+        <button class="cmd-execute-btn" onclick="executeCmd('${c.command}'); document.getElementById('modal-overlay').classList.remove('active')">EXECUTE</button>
+      </div>
+    </div>
+  `;
+  overlay.classList.add('active');
+}
+
+function openMetricModal(metric) {
+  const labels = {battery:'Battery Level',wind:'Wind Speed',alt:'Altitude',stab:'Wing Stability',gps:'GPS Signal',temp:'Temperature'};
+  const vals = {battery:S.battery.toFixed(1)+'%',wind:S.wind.toFixed(1)+' m/s',alt:S.alt.toFixed(0)+' m',stab:S.stab.toFixed(3),gps:S.gps.toFixed(3),temp:S.temp.toFixed(0)+'°C'};
+  const thresholds = {battery:'WARN<20% CRIT<10%',wind:'WARN>16 CRIT>24 m/s',alt:'SAFE 50–120m',stab:'WARN<0.82 CRIT<0.62',gps:'WARN<0.5 CRIT<0.25',temp:'WARN>45 CRIT>55°C'};
+  const analysis = {
+    battery:`Battery at <b>${vals.battery}</b>. ${S.battery<20?'Below warning threshold — return to base recommended.':'Nominal — estimated '+(S.battery*1.2).toFixed(0)+' min remaining.'}`,
+    wind:`Wind speed <b>${vals.wind}</b>. ${S.wind>16?'Above safe operational limit — altitude reduction recommended.':'Within safe operating envelope.'}`,
+    alt:`Current altitude <b>${vals.alt}</b>. ${S.alt>120?'Approaching regulatory ceiling.':S.alt<50?'Low altitude — collision risk elevated.':'Optimal flight band.'}`,
+    stab:`Wing stability index <b>${vals.stab}</b>. ${S.stab<0.82?'Degraded — possible mechanical or environmental cause.':'Nominal aerodynamic performance.'}`,
+    gps:`GPS signal strength <b>${vals.gps}</b>. ${S.gps<0.5?'Reduced accuracy — position hold unreliable.':'Strong signal — full navigation available.'}`,
+    temp:`System temperature <b>${vals.temp}</b>. ${S.temp>45?'Elevated — thermal throttling may activate.':'Within operational thermal limits.'}`
+  };
+  document.getElementById('modal-title').textContent = labels[metric];
+  document.getElementById('modal-sub').textContent = 'Live telemetry analysis · ' + new Date().toLocaleTimeString();
+  document.getElementById('modal-body').innerHTML = `
+    <div class="modal-section">
+      <div class="modal-section-title">Current Reading</div>
+      <div style="font-family:var(--mono);font-size:28px;font-weight:500;color:var(--green);margin:8px 0">${vals[metric]}</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim)">Thresholds: ${thresholds[metric]}</div>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Analysis</div>
+      <div class="modal-text">${analysis[metric]}</div>
+    </div>
+    <div class="modal-section">
+      <div class="modal-section-title">Recent History (last 20 readings)</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim)">Click on telemetry cards to view real-time trends</div>
+    </div>
+  `;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal-overlay'))
+    document.getElementById('modal-overlay').classList.remove('active');
+}
+
+function executeCmd(cmd) {
+  addLog('cmd','cmd','Operator executed: ' + cmd);
+  addLog('ok','agent','Agent: Command acknowledged — monitoring effect on flight parameters');
+}
+
+// ─── INJECT DISTURBANCES ─────────────────────────────────────────────────────
+function inject(type) {
+  if (type === 'wind') {
+    S.wind = 26 + Math.random()*3; S.scenario = 'wind';
+    addLog('warn','warn','DISTURBANCE INJECTED — Wind spike detected: ' + S.wind.toFixed(1) + ' m/s. Exceeds CRITICAL threshold of 24 m/s');
+    addLog('warn','agent','Wind Agent: Analyzing gust pattern — sustained HIGH wind at altitude 95 m. Structural stress elevated');
+  } else if (type === 'bird') {
+    S.stab = 0.58 + Math.random()*0.06; S.scenario = 'bird';
+    addLog('crit','crit','DISTURBANCE INJECTED — Wing stability CRITICAL drop to ' + S.stab.toFixed(2) + '. Possible bird strike or mechanical FAULT');
+    addLog('crit','agent','Stability Agent: Rapid stability LOSS detected. Delta from baseline: -0.38. Flagging as CRITICAL incident');
+  } else if (type === 'battery') {
+    S.battery = 7 + Math.random()*2; S.scenario = 'battery';
+    addLog('crit','crit','DISTURBANCE INJECTED — Battery CRITICAL at ' + S.battery.toFixed(0) + '%. FAILURE imminent — immediate action required');
+    addLog('crit','agent','Battery Agent: Power CRITICAL. Estimated flight time remaining: ' + Math.round(S.battery*1.2) + 's. Issuing RETURN_TO_HOME recommendation');
+  } else if (type === 'gps') {
+    S.gps = 0.08 + Math.random()*0.1; S.scenario = 'gps';
+    addLog('warn','warn','DISTURBANCE INJECTED — GPS signal LOSS. Current strength: ' + S.gps.toFixed(2) + '. Navigation accuracy REDUCED');
+    addLog('warn','agent','GPS Agent: Signal LOSS detected — possible jamming or obstruction. Switching to dead-reckoning navigation mode');
+  } else if (type === 'turbulence') {
+    S.stab -= 0.12; S.wind += 8; S.alt += 15; S.scenario = 'turbulence';
+    addLog('warn','warn','DISTURBANCE INJECTED — Turbulence event: multi-axis disturbance. Wind +8 m/s, stability -0.12, altitude variance ±15m');
+    addLog('warn','agent','Flight Controller: TURBULENCE detected across multiple axes. Engaging attitude hold — ELEVATED risk profile');
+  } else if (type === 'engine') {
+    S.stab -= 0.08; S.temp += 18; S.scenario = 'engine';
+    addLog('crit','crit','DISTURBANCE INJECTED — Engine vibration anomaly detected. Temperature spike to ' + S.temp.toFixed(0) + '°C. Mechanical FAULT suspected');
+    addLog('crit','agent','Mechanical Agent: Vibration signature matches rotor imbalance. Thermal ELEVATED. Recommend immediate inspection landing');
+  } else if (type === 'reset') {
+    Object.assign(S, { battery:78, wind:6, alt:95, stab:0.96, gps:0.95, temp:32, scenario:null, lastIssues:[] });
+    agentCards = [];
+    addLog('ok','ok','System RESET — all parameters restored to nominal baseline');
+    addLog('ok','agent','Supervisor Agent: All sub-agents returning to monitoring state. Risk score nominal');
+    renderAgentPanel();
+  }
+}
+
+// ─── HUD UPDATES ─────────────────────────────────────────────────────────────
+function riskColor(r) { return r<0.4?'var(--green)':r<0.72?'var(--amber)':'var(--red)'; }
+function bColor(v) { return v>30?'var(--green)':v>15?'var(--amber)':'var(--red)'; }
+function wColor(v) { return v<16?'var(--green)':v<24?'var(--amber)':'var(--red)'; }
+function sColor(v) { return v>0.82?'var(--green)':v>0.62?'var(--amber)':'var(--red)'; }
+
+function updateHUD() {
+  const setM = (id, val, bar, pct, col) => {
+    document.getElementById('mv-'+id).innerHTML = val;
+    const f = document.getElementById('mf-'+id);
+    f.style.width = Math.min(100,Math.max(0,pct))+'%';
+    f.style.background = col;
+  };
+
+  setM('battery', Math.round(S.battery)+'<span class="metric-unit">%</span>', 'battery', S.battery, bColor(S.battery));
+  setM('wind', S.wind.toFixed(1)+'<span class="metric-unit">m/s</span>', 'wind', (S.wind/30)*100, wColor(S.wind));
+  setM('alt', Math.round(S.alt)+'<span class="metric-unit">m</span>', 'alt', (S.alt/150)*100, 'var(--blue)');
+  setM('stab', S.stab.toFixed(2), 'stab', S.stab*100, sColor(S.stab));
+  setM('gps', S.gps.toFixed(2), 'gps', S.gps*100, S.gps>0.5?'var(--green)':S.gps>0.25?'var(--amber)':'var(--red)');
+  setM('temp', Math.round(S.temp)+'<span class="metric-unit">°C</span>', 'temp', (S.temp/80)*100, S.temp<45?'var(--amber)':S.temp<55?'var(--red)':'var(--red)');
+
+  const trends = {
+    battery: S.battery < 20 ? '⚠ CRITICAL LOW' : '▼ draining',
+    wind: S.wind > 16 ? '▲ EXCEEDED' : 'stable',
+    alt: S.alt > 120 ? '▲ HIGH' : 'holding',
+    stab: S.stab < 0.82 ? '⚠ DEGRADED' : 'nominal',
+    gps: S.gps < 0.5 ? '⚠ WEAK' : 'strong',
+    temp: S.temp > 45 ? '⚠ HOT' : 'normal',
+  };
+  ['battery','wind','alt','stab','gps','temp'].forEach(k => {
+    document.getElementById('mt-'+k).textContent = trends[k];
+  });
+  // metric card borders
+  [['battery',bColor(S.battery)],['wind',wColor(S.wind)],['stab',sColor(S.stab)]].forEach(([k,c]) => {
+    const el = document.getElementById('mc-'+k);
+    el.className = 'metric-card' + (c==='var(--red)' ? ' crit' : c==='var(--amber)' ? ' warn' : '');
+  });
+
+  const r = S.risk;
+  const rc = riskColor(r);
+  document.getElementById('risk-big').textContent = r.toFixed(2);
+  document.getElementById('risk-big').style.color = rc;
+  document.getElementById('risk-ptr').style.left = Math.round(r*92+4)+'%';
+  document.getElementById('risk-status-text').textContent = r>0.78?'CRITICAL':r>0.38?'WARNING':'SAFE';
+  document.getElementById('risk-status-text').style.color = rc;
+
+  const dot = document.getElementById('hdr-dot');
+  const modeBadge = document.getElementById('mode-badge');
+  if (r > 0.78) {
+    dot.className = 'pulse-dot red';
+    modeBadge.className = 'mode-badge mode-autonomous';
+    document.getElementById('mode-text').textContent = 'AUTONOMOUS MODE';
+    document.getElementById('hdr-status').textContent = 'CRITICAL';
+    document.getElementById('hdr-status').style.color = 'var(--red)';
+  } else if (r > 0.38) {
+    dot.className = 'pulse-dot amber';
+    modeBadge.className = 'mode-badge mode-advisory';
+    document.getElementById('mode-text').textContent = 'ADVISORY MODE';
+    document.getElementById('hdr-status').textContent = 'WARNING';
+    document.getElementById('hdr-status').style.color = 'var(--amber)';
+  } else {
+    dot.className = 'pulse-dot';
+    modeBadge.className = 'mode-badge mode-advisory';
+    document.getElementById('mode-text').textContent = 'ADVISORY MODE';
+    document.getElementById('hdr-status').textContent = 'NOMINAL';
+    document.getElementById('hdr-status').style.color = 'var(--green)';
+  }
+
+  // uptime
+  const sec = Math.floor((Date.now() - S.startTime)/1000);
+  const m = String(Math.floor(sec/60)).padStart(2,'0');
+  const s = String(sec%60).padStart(2,'0');
+  document.getElementById('hdr-time').textContent = m+':'+s;
+}
+
+// ─── FLIGHT SIMULATION ────────────────────────────────────────────────────────
+const mainCanvas = document.getElementById('mainCanvas');
+const mainCtx = mainCanvas.getContext('2d');
+let clouds = [];
+let birds = [];
+let particles = [];
+
+function initFlight() {
+  S.x = mainCanvas.width/2;
+  S.y = mainCanvas.height*0.55;
+  clouds = Array.from({length:8}, () => ({
+    x: Math.random()*mainCanvas.width,
+    y: 40 + Math.random()*120,
+    w: 60 + Math.random()*80,
+    spd: 0.2 + Math.random()*0.3
+  }));
+  birds = [];
+}
+
+function drawMain() {
+  const c = mainCtx;
+  const w = mainCanvas.width, h = mainCanvas.height;
+
+  // sky gradient
+  const sky = c.createLinearGradient(0,0,0,h*0.65);
+  sky.addColorStop(0, '#040810');
+  sky.addColorStop(0.5, '#080f1a');
+  sky.addColorStop(1, '#0c1520');
+  c.fillStyle = sky;
+  c.fillRect(0,0,w,h*0.65);
+
+  // ground
+  const grd = c.createLinearGradient(0,h*0.65,0,h);
+  grd.addColorStop(0,'#0a1505');
+  grd.addColorStop(1,'#060d04');
+  c.fillStyle = grd;
+  c.fillRect(0,h*0.65,w,h*0.35);
+
+  // horizon line
+  c.strokeStyle = 'rgba(0,255,180,0.07)';
+  c.lineWidth = 1;
+  c.setLineDash([4,8]);
+  c.beginPath(); c.moveTo(0,h*0.65); c.lineTo(w,h*0.65); c.stroke();
+  c.setLineDash([]);
+
+  // grid overlay on sky
+  c.strokeStyle = 'rgba(0,255,180,0.04)';
+  c.lineWidth = 0.5;
+  for (let gx=0; gx<w; gx+=40) { c.beginPath(); c.moveTo(gx,0); c.lineTo(gx,h*0.65); c.stroke(); }
+  for (let gy=0; gy<h*0.65; gy+=40) { c.beginPath(); c.moveTo(0,gy); c.lineTo(w,gy); c.stroke(); }
+
+  // ground grid
+  c.strokeStyle = 'rgba(0,255,180,0.06)';
+  for (let gx=0; gx<w; gx+=60) { c.beginPath(); c.moveTo(gx,h*0.65); c.lineTo(gx,h); c.stroke(); }
+
+  // altitude indicator
+  const altPct = Math.min(1, S.alt/150);
+  const altY = h*0.65 - altPct*(h*0.6);
+  c.strokeStyle = 'rgba(77,184,255,0.3)';
+  c.setLineDash([3,6]);
+  c.lineWidth = 0.8;
+  c.beginPath(); c.moveTo(0,altY); c.lineTo(w,altY); c.stroke();
+  c.setLineDash([]);
+  c.fillStyle = 'rgba(77,184,255,0.6)';
+  c.font = '9px IBM Plex Mono';
+  c.fillText(Math.round(S.alt)+'m', 4, altY-3);
+
+  // clouds
+  clouds.forEach(cl => {
+    cl.x += cl.spd * (1 + S.wind/20);
+    if (cl.x > w+cl.w) cl.x = -cl.w;
+    const alpha = S.wind > 18 ? 0.12 : 0.07;
+    c.fillStyle = `rgba(100,180,255,${alpha})`;
+    c.beginPath();
+    c.ellipse(cl.x, cl.y, cl.w/2, cl.w/5, 0, 0, Math.PI*2);
+    c.fill();
+  });
+
+  // wind lines
+  if (S.wind > 10) {
+    const wIntensity = (S.wind - 10) / 20;
+    for (let i=0; i<5; i++) {
+      const wy = 80 + i*60;
+      const len = 30 + wIntensity*60;
+      const offset = (S.tick * S.wind * 0.3 + i*120) % (w+100) - 50;
+      c.strokeStyle = `rgba(77,184,255,${0.1+wIntensity*0.2})`;
+      c.lineWidth = 0.8;
+      c.setLineDash([len, 20+Math.random()*40]);
+      c.beginPath(); c.moveTo(offset,wy); c.lineTo(offset+len,wy); c.stroke();
+    }
+    c.setLineDash([]);
+  }
+
+  // birds during bird scenario
+  if (S.scenario === 'bird' && birds.length === 0) {
+    birds = Array.from({length:4}, () => ({
+      x: Math.random()*w, y: 80+Math.random()*100,
+      vx: -1.5-Math.random(), vy: 0.3-Math.random()*0.6
+    }));
+  }
+  if (S.scenario !== 'bird') birds = [];
+  birds.forEach(b => {
+    b.x += b.vx; b.y += b.vy;
+    if (b.x < -20) b.x = w+20;
+    c.strokeStyle = 'rgba(255,180,100,0.7)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(b.x-6, b.y+3);
+    c.quadraticCurveTo(b.x, b.y-4, b.x+6, b.y+3);
+    c.stroke();
+  });
+
+  // particles (turbulence/engine)
+  if (S.scenario === 'turbulence' || S.scenario === 'engine') {
+    for (let i=0; i<3; i++) particles.push({x:S.x,y:S.y,vx:(Math.random()-0.5)*3,vy:(Math.random()-0.5)*3,life:40,color:'rgba(255,183,0,'});
+  }
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x+=p.vx; p.y+=p.vy; p.life--;
+    c.fillStyle = p.color+(p.life/40*0.6)+')';
+    c.beginPath(); c.arc(p.x,p.y,2,0,Math.PI*2); c.fill();
+  });
+
+  // drone physics
+  const targetX = w/2 + Math.sin(S.tick*0.012)*180 + (S.scenario==='wind'?Math.sin(S.tick*0.08)*30:0);
+  const targetY = h*0.45 - (S.alt-50)*1.2 + Math.sin(S.tick*0.02)*15 + (S.stab<0.75?Math.sin(S.tick*0.3)*18:0);
+  S.x += (targetX - S.x)*0.025;
+  S.y += (targetY - S.y)*0.02;
+  S.heading = Math.atan2(targetY-S.y, targetX-S.x);
+
+  // thrust rings (rotors)
+  const rotorR = 14;
+  const thrustColor = S.risk>0.78?'rgba(255,68,68,0.4)':S.risk>0.38?'rgba(255,183,0,0.3)':'rgba(0,255,180,0.3)';
+  [[-20,-10],[20,-10],[-20,10],[20,10]].forEach(([ox,oy]) => {
+    const rx = S.x+ox, ry = S.y+oy;
+    c.strokeStyle = thrustColor;
+    c.lineWidth = 1;
+    c.beginPath(); c.arc(rx,ry,rotorR,0,Math.PI*2); c.stroke();
+    // spinning blades
+    const angle = S.tick * 0.35;
+    c.strokeStyle = 'rgba(180,220,255,0.5)';
+    c.lineWidth = 1.5;
+    for (let r=0;r<2;r++) {
+      const a = angle + r*Math.PI;
+      c.beginPath();
+      c.moveTo(rx+Math.cos(a)*rotorR*0.8, ry+Math.sin(a)*rotorR*0.8);
+      c.lineTo(rx-Math.cos(a)*rotorR*0.8, ry-Math.sin(a)*rotorR*0.8);
+      c.stroke();
+    }
+  });
+
+  // drone body
+  c.save();
+  c.translate(S.x, S.y);
+  c.rotate(S.heading * 0.2);
+  // body
+  c.fillStyle = S.risk>0.78?'rgba(255,68,68,0.9)':S.risk>0.38?'rgba(255,183,0,0.9)':'rgba(0,255,180,0.9)';
+  c.strokeStyle = 'rgba(255,255,255,0.3)';
+  c.lineWidth = 0.5;
+  c.beginPath();
+  c.moveTo(-14,0); c.lineTo(0,-8); c.lineTo(14,0); c.lineTo(0,8); c.closePath();
+  c.fill(); c.stroke();
+  // arms
+  c.strokeStyle = 'rgba(150,200,255,0.4)';
+  c.lineWidth = 1.5;
+  [[-20,-10],[20,-10],[-20,10],[20,10]].forEach(([ox,oy])=>{
+    c.beginPath(); c.moveTo(0,0); c.lineTo(ox,oy); c.stroke();
+  });
+  // glow
+  const glow = c.createRadialGradient(0,0,0,0,0,30);
+  glow.addColorStop(0, S.risk>0.78?'rgba(255,68,68,0.15)':S.risk>0.38?'rgba(255,183,0,0.12)':'rgba(0,255,180,0.1)');
+  glow.addColorStop(1,'transparent');
+  c.fillStyle = glow;
+  c.beginPath(); c.arc(0,0,30,0,Math.PI*2); c.fill();
+  c.restore();
+
+  // status readout on canvas
+  c.fillStyle = 'rgba(0,255,180,0.7)';
+  c.font = '9px IBM Plex Mono';
+  c.fillText(`RISK: ${S.risk.toFixed(3)}  ALT: ${Math.round(S.alt)}m  WIND: ${S.wind.toFixed(1)}m/s`, 10, h-10);
+
+  // warning flash overlay
+  if (S.risk > 0.78 && Math.floor(S.tick/8)%2===0) {
+    c.fillStyle = 'rgba(255,68,68,0.04)';
+    c.fillRect(0,0,w,h);
+  }
+}
+
+// ─── FLIGHT PATH MAP ─────────────────────────────────────────────────────────
+const flightCanvas = document.getElementById('flightCanvas');
+const flightCtx = flightCanvas.getContext('2d');
+let mapX = 0, mapY = 0;
+
+function drawMap() {
+  const c = flightCtx;
+  const w = flightCanvas.width, h = flightCanvas.height;
+  c.clearRect(0,0,w,h);
+  // bg
+  c.fillStyle = '#080c10';
+  c.fillRect(0,0,w,h);
+  // grid
+  c.strokeStyle='rgba(0,255,180,0.06)'; c.lineWidth=0.5;
+  for(let x=0;x<w;x+=20){c.beginPath();c.moveTo(x,0);c.lineTo(x,h);c.stroke();}
+  for(let y=0;y<h;y+=20){c.beginPath();c.moveTo(0,y);c.lineTo(w,y);c.stroke();}
+
+  // update map position
+  mapX = (w/2) + Math.sin(S.tick*0.012)*60 + (S.scenario==='wind'?Math.sin(S.tick*0.08)*10:0);
+  mapY = (h/2) + Math.cos(S.tick*0.009)*40;
+
+  flightPath.push({x:mapX, y:mapY, r:S.risk});
+  if (flightPath.length > 300) flightPath.shift();
+
+  // draw path
+  if (flightPath.length > 2) {
+    flightPath.forEach((pt,i) => {
+      if (i===0) return;
+      const prev = flightPath[i-1];
+      const alpha = i/flightPath.length * 0.8;
+      const col = pt.r>0.78?`rgba(255,68,68,${alpha})`:pt.r>0.38?`rgba(255,183,0,${alpha})`:`rgba(0,255,180,${alpha})`;
+      c.strokeStyle = col;
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(prev.x,prev.y); c.lineTo(pt.x,pt.y); c.stroke();
+    });
+  }
+
+  // home base
+  c.strokeStyle='rgba(0,255,180,0.4)'; c.lineWidth=1;
+  c.setLineDash([3,4]);
+  c.beginPath(); c.arc(w/2,h/2,8,0,Math.PI*2); c.stroke();
+  c.setLineDash([]);
+  c.fillStyle='rgba(0,255,180,0.2)'; c.beginPath(); c.arc(w/2,h/2,4,0,Math.PI*2); c.fill();
+
+  // drone dot
+  const dc = S.risk>0.78?'#ff4444':S.risk>0.38?'#ffb700':'#00ffb4';
+  c.fillStyle = dc;
+  c.beginPath(); c.arc(mapX,mapY,4,0,Math.PI*2); c.fill();
+  c.strokeStyle='rgba(255,255,255,0.2)'; c.lineWidth=1;
+  c.beginPath(); c.arc(mapX,mapY,7,0,Math.PI*2); c.stroke();
+}
+
+// ─── TELEMETRY DRIFT ──────────────────────────────────────────────────────────
+let agentCooldown = 0;
+let logCooldown = 0;
+
+function tickTelemetry() {
+  S.tick++;
+  if (!S.scenario) {
+    S.battery = Math.max(3, S.battery - 0.04);
+    S.wind = Math.max(2, Math.min(12, S.wind + (Math.random()-0.5)*0.4));
+    S.stab = Math.min(1, Math.max(0.91, S.stab + (Math.random()-0.5)*0.008));
+    S.gps = Math.min(0.98, Math.max(0.88, S.gps + (Math.random()-0.5)*0.01));
+    S.temp = Math.min(38, Math.max(28, S.temp + (Math.random()-0.5)*0.3));
+    S.alt = Math.min(130, Math.max(60, S.alt + (Math.random()-0.5)*1.5));
+  }
+
+  const prevRisk = S.risk;
+  S.risk = computeRisk();
+  histRisk.push(S.risk); histRisk.shift();
+
+  // auto-log every 8s
+  logCooldown--;
+  if (logCooldown <= 0) {
+    logCooldown = 10;
+    if (S.risk > 0.38) {
+      const iss = S.lastIssues[0];
+      if (iss) addLog('warn','warn',`Supervisor Agent: Monitoring ${iss.key} — current ${iss.val} vs threshold ${iss.threshold}`);
+    } else {
+      addLog('ok','ok', `Telemetry nominal — battery ${Math.round(S.battery)}%, wind ${S.wind.toFixed(1)} m/s, stability ${S.stab.toFixed(2)}, GPS ${S.gps.toFixed(2)}`);
+    }
+  }
+
+  // threshold crossing log
+  if (prevRisk < 0.4 && S.risk >= 0.4) {
+    addLog('warn','warn','Risk threshold EXCEEDED — crossing WARNING boundary (0.40). Activating advisory protocols');
+    addLog('warn','agent','Supervisor Agent: Escalating to WARNING state — engaging sub-agent analysis');
+  }
+  if (prevRisk < 0.78 && S.risk >= 0.78) {
+    addLog('crit','crit','CRITICAL THRESHOLD BREACHED — autonomous intervention activating. Risk score: ' + S.risk.toFixed(3));
+    addLog('crit','cmd','Agent issued command: AUTONOMOUS_INTERVENTION_ACTIVE — all manual overrides require confirmation');
+  }
+  if (prevRisk > 0.4 && S.risk < 0.4) {
+    addLog('ok','ok','Risk returned to SAFE range — resuming advisory mode monitoring');
+  }
+
+  // agent card generation
+  agentCooldown--;
+  if (agentCooldown <= 0 && S.risk > 0.35 && S.lastIssues.length > 0) {
+    agentCooldown = 15;
+    const card = generateAgentCard(S.risk, S.lastIssues);
+    if (card) {
+      agentCards.push(card);
+      if (agentCards.length > 20) agentCards.shift();
+      renderAgentPanel();
+      addLog(card.severity==='crit'?'crit':'warn','agent',`Agent drafted plan: "${card.title}" — ${card.plan.length} intervention steps, command: ${card.command.split(' ')[0]+' '+card.command.split(' ')[1]}`);
+    }
+  }
+
+  updateHUD();
+}
+
+// ─── RESIZE ──────────────────────────────────────────────────────────────────
+function resizeCanvases() {
+  const mc = document.querySelector('.flight-view');
+  mainCanvas.width = mc.clientWidth;
+  mainCanvas.height = mc.clientHeight;
+  const fc = document.querySelector('.map-canvas-wrap');
+  flightCanvas.width = fc.clientWidth;
+  flightCanvas.height = fc.clientHeight;
+  initFlight();
+}
+
+// ─── LOOP ────────────────────────────────────────────────────────────────────
+let lastTick = 0;
+function loop(ts) {
+  if (ts - lastTick > 800) { tickTelemetry(); lastTick = ts; }
+  drawMain();
+  drawMap();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resizeCanvases);
+setTimeout(() => {
+  resizeCanvases();
+  addLog('ok','ok','AFSM v2.1 initialized — drone DRONE_001 connected, all systems nominal');
+  addLog('ok','agent','Supervisor Agent: All sub-agents online — Battery Agent, Wind Agent, Stability Agent, GPS Agent');
+  addLog('ok','cmd','CMD: BEGIN_FLIGHT_MONITORING mode=ADVISORY confidence=0.94');
+  requestAnimationFrame(loop);
+}, 100);
+</script>
+</body>
+</html>
