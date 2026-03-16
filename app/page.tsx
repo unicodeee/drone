@@ -1,511 +1,465 @@
-'use client';
+"use client";
 
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 
-interface TelemetryState {
-  battery: number;
-  wind: number;
-  alt: number;
-  stab: number;
-  gps: number;
-  temp: number;
-  risk: number;
-  startTime: number;
-  totalEvents: number;
-}
+export default function AFSMPage() {
+    const containerRef = useRef<HTMLDivElement>(null);
 
-type LogLevel = 'ok' | 'warn' | 'crit' | 'cmd';
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
 
-interface LogEntry {
-  id: number;
-  level: LogLevel;
-  badge: 'ok' | 'warn' | 'crit' | 'cmd';
-  message: string;
-  time: string;
-}
+        // ─── STATE ───────────────────────────────────────────────────────────────────
+        let S = {
+            battery: 78, wind: 6, alt: 95, stab: 0.96, gps: 0.95, temp: 32,
+            risk: 0.08, scenario: null as string | null, tick: 0,
+            x: 0, y: 0, vx: 1.2, vy: 0.4, heading: 0,
+            startTime: Date.now(), totalEvents: 0,
+            lastIssues: [] as any[]
+        };
+        let logEntries: any[] = [];
+        let flightPath: any[] = [];
+        let agentCards: any[] = [];
+        let lastDecisionTime = 0;
 
-const initialState: TelemetryState = {
-  battery: 78,
-  wind: 6,
-  alt: 95,
-  stab: 0.96,
-  gps: 0.95,
-  temp: 32,
-  risk: 0.08,
-  startTime: Date.now(),
-  totalEvents: 0,
-};
+        // ─── RISK ENGINE ──────────────────────────────────────────────────────────────
+        function computeRisk() {
+            let r = 0, issues = [];
+            if (S.battery < 8) { r += 0.5; issues.push({ key: 'BATTERY_CRITICAL', val: S.battery.toFixed(0) + '%', threshold: '10%', delta: '+' + ((10 - S.battery).toFixed(1)) + '%' }); }
+            else if (S.battery < 20) { r += 0.28; issues.push({ key: 'BATTERY_LOW', val: S.battery.toFixed(0) + '%', threshold: '20%', delta: '+' + ((20 - S.battery).toFixed(1)) + '%' }); }
+            if (S.wind > 24) { r += 0.38; issues.push({ key: 'WIND_CRITICAL', val: S.wind.toFixed(1) + 'm/s', threshold: '24m/s', delta: '+' + (S.wind - 24).toFixed(1) }); }
+            else if (S.wind > 16) { r += 0.22; issues.push({ key: 'HIGH_WIND', val: S.wind.toFixed(1) + 'm/s', threshold: '16m/s', delta: '+' + (S.wind - 16).toFixed(1) }); }
+            if (S.stab < 0.62) { r += 0.35; issues.push({ key: 'WING_INSTABILITY', val: S.stab.toFixed(2), threshold: '0.75', delta: (S.stab - 0.75).toFixed(2) }); }
+            else if (S.stab < 0.82) { r += 0.18; issues.push({ key: 'REDUCED_STABILITY', val: S.stab.toFixed(2), threshold: '0.82', delta: (S.stab - 0.82).toFixed(2) }); }
+            if (S.gps < 0.25) { r += 0.28; issues.push({ key: 'GPS_SIGNAL_LOSS', val: S.gps.toFixed(2), threshold: '0.40', delta: (S.gps - 0.40).toFixed(2) }); }
+            if (S.temp > 52) { r += 0.15; issues.push({ key: 'THERMAL_WARNING', val: S.temp.toFixed(0) + '°C', threshold: '50°C', delta: '+' + ((S.temp - 50).toFixed(0)) + '°' }); }
+            S.lastIssues = issues;
+            return Math.min(1, Math.max(0, r + (Math.random() * 0.015 - 0.0075)));
+        }
 
-function computeRisk(s: TelemetryState): number {
-  let r = 0;
-  if (s.battery < 8) r += 0.5;
-  else if (s.battery < 20) r += 0.28;
-  if (s.wind > 24) r += 0.38;
-  else if (s.wind > 16) r += 0.22;
-  if (s.stab < 0.62) r += 0.35;
-  else if (s.stab < 0.82) r += 0.18;
-  if (s.gps < 0.25) r += 0.28;
-  if (s.temp > 52) r += 0.15;
-  return Math.min(1, Math.max(0, r));
-}
+        // ─── NEMOTRON INTEGRATION ───────────────────────────────────────────────────
+        async function requestNemotronDecision(trigger: string) {
+            const now = Date.now();
+            if (now - lastDecisionTime < 2500) return;
+            lastDecisionTime = now;
 
-export default function HomePage() {
-  const [state, setState] = useState<TelemetryState>(initialState);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const flightCanvasRef = useRef<HTMLCanvasElement | null>(null);
+            addLog('cmd', 'agent', `Requesting Nemotron analysis (trigger: ${trigger})...`);
 
-  const addLog = (level: LogLevel, badge: LogEntry['badge'], message: string) => {
-    const now = new Date();
-    const t = `${String(now.getMinutes()).padStart(2, '0')}:${String(
-      now.getSeconds(),
-    ).padStart(2, '0')}.${String(now.getMilliseconds()).slice(0, 1)}`;
-    setLogs((prev) => [
-      {
-        id: Date.now() + Math.random(),
-        level,
-        badge,
-        message,
-        time: t,
-      },
-      ...prev,
-    ]);
-    setState((prev) => ({ ...prev, totalEvents: prev.totalEvents + 1 }));
-  };
+            try {
+                const response = await fetch('/api/decision', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        telemetry: {
+                            battery: S.battery,
+                            wind: S.wind,
+                            alt: S.alt,
+                            stab: S.stab,
+                            gps: S.gps,
+                            temp: S.temp,
+                            risk: S.risk
+                        },
+                        issues: S.lastIssues,
+                        trigger: trigger
+                    })
+                });
 
-  const inject = (type: 'wind' | 'bird' | 'battery' | 'gps' | 'turbulence' | 'engine' | 'reset') => {
-    setState((prev) => {
-      if (type === 'reset') {
-        addLog('ok', 'ok', 'System RESET — all parameters restored to nominal baseline');
-        return { ...initialState, startTime: prev.startTime };
-      }
+                if (!response.ok) throw new Error('Failed to get decision');
+                const decision = await response.json();
 
-      let s = { ...prev };
-      if (type === 'wind') {
-        s.wind = 26 + Math.random() * 3;
-        addLog(
-          'warn',
-          'warn',
-          `DISTURBANCE — Wind spike detected: ${s.wind.toFixed(
-            1,
-          )} m/s. Exceeds CRITICAL threshold of 24 m/s`,
-        );
-      } else if (type === 'bird') {
-        s.stab = 0.58 + Math.random() * 0.06;
-        addLog(
-          'crit',
-          'crit',
-          `DISTURBANCE — Wing stability CRITICAL drop to ${s.stab.toFixed(
-            2,
-          )}. Possible bird strike or mechanical fault`,
-        );
-      } else if (type === 'battery') {
-        s.battery = 7 + Math.random() * 2;
-        addLog(
-          'crit',
-          'crit',
-          `DISTURBANCE — Battery CRITICAL at ${s.battery.toFixed(
-            0,
-          )}%. Failure imminent — immediate action required`,
-        );
-      } else if (type === 'gps') {
-        s.gps = 0.08 + Math.random() * 0.1;
-        addLog(
-          'warn',
-          'warn',
-          `DISTURBANCE — GPS signal loss. Current strength: ${s.gps.toFixed(
-            2,
-          )}. Navigation accuracy reduced`,
-        );
-      } else if (type === 'turbulence') {
-        s.stab -= 0.12;
-        s.wind += 8;
-        s.alt += 15;
-        addLog(
-          'warn',
-          'warn',
-          'DISTURBANCE — Turbulence event: multi-axis disturbance (wind +8 m/s, stability -0.12, altitude variance ±15m)',
-        );
-      } else if (type === 'engine') {
-        s.stab -= 0.08;
-        s.temp += 18;
-        addLog(
-          'crit',
-          'crit',
-          `DISTURBANCE — Engine vibration anomaly. Temperature spike to ${s.temp.toFixed(
-            0,
-          )}°C. Mechanical fault suspected`,
-        );
-      }
-      s.risk = computeRisk(s);
-      return s;
-    });
-  };
+                const card = {
+                    severity: decision.safety_state === 'CRITICAL' ? 'crit' : decision.safety_state === 'WARNING' ? 'warn' : 'ok',
+                    title: decision.recommended_action.replace(/_/g, ' '),
+                    body: decision.reasoning_bullets.join('. '),
+                    plan: decision.reasoning_bullets.map((b: string) => ({ text: b, pri: decision.safety_state === 'CRITICAL' ? 'high' : 'med' })),
+                    command: decision.command,
+                    issues: decision.triggered_rules.map((r: any) => ({ key: r.rule_id, val: r.value, threshold: r.threshold, delta: 'N/A' })),
+                    risk: decision.risk_score,
+                    ts: Date.now()
+                };
 
-  // Resize canvases to fill containers
-  useEffect(() => {
-    function resize() {
-      if (mainCanvasRef.current) {
-        const el = mainCanvasRef.current;
-        const parent = el.parentElement;
-        if (!parent) return;
-        el.width = parent.clientWidth;
-        el.height = parent.clientHeight;
-      }
-      if (flightCanvasRef.current) {
-        const el = flightCanvasRef.current;
-        const parent = el.parentElement;
-        if (!parent) return;
-        el.width = parent.clientWidth;
-        el.height = parent.clientHeight;
-      }
-    }
-    resize();
-    window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, []);
+                if (card.severity !== 'ok') {
+                    agentCards.push(card);
+                    if (agentCards.length > 20) agentCards.shift();
+                    renderAgentPanel();
+                    addLog(card.severity === 'crit' ? 'crit' : 'warn', 'agent', `Nemotron Decision: ${card.title} - ${card.command}`);
+                } else {
+                    addLog('ok', 'agent', `Nemotron analysis: NOMINAL. All systems clear.`);
+                }
 
-  // Simple animation loop stub – you can paste
-  // your full drawMain / flightPath logic here later.
-  useEffect(() => {
-    const canvas = mainCanvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
+            } catch (error) {
+                addLog('warn', 'agent', 'Nemotron request failed. Retrying in next cycle.');
+            }
+        }
 
-    let frameId: number;
-
-    const render = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      grad.addColorStop(0, '#040810');
-      grad.addColorStop(1, '#0c1520');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      ctx.fillStyle = 'rgba(0,255,180,0.8)';
-      ctx.font = '11px IBM Plex Mono, monospace';
-      ctx.fillText(
-        `RISK ${state.risk.toFixed(2)}  ALT ${Math.round(
-          state.alt,
-        )}m  WIND ${state.wind.toFixed(1)}m/s`,
-        16,
-        canvas.height - 20,
-      );
-
-      frameId = requestAnimationFrame(render);
-    };
-
-    render();
-    return () => cancelAnimationFrame(frameId);
-  }, [state.risk, state.alt, state.wind]);
-
-  // Simple ticking of uptime + recompute risk (no physics yet)
-  useEffect(() => {
-    const id = setInterval(() => {
-      setState((prev) => ({
-        ...prev,
-        risk: computeRisk(prev),
-      }));
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const uptimeSeconds = Math.floor((Date.now() - state.startTime) / 1000);
-  const minutes = String(Math.floor(uptimeSeconds / 60)).padStart(2, '0');
-  const seconds = String(uptimeSeconds % 60).padStart(2, '0');
-
-  const riskLabel = state.risk > 0.78 ? 'CRITICAL' : state.risk > 0.38 ? 'WARNING' : 'NOMINAL';
-
-  return (
-    <div className="layout">
-      {/* HEADER */}
-      <header className="header">
-        <span className="header-logo">AFSM v2.1</span>
-        <span className="header-sub">AUTONOMOUS FLIGHT SAFETY MONITOR</span>
-        <div className="header-spacer" />
-        <div className="header-stat">
-          <span className="pulse-dot" />
-          <span>STATUS</span>
-          <span className="val">{riskLabel}</span>
-        </div>
-        <div className="header-stat">
-          <span>DRONE</span>
-          <span className="val">DRONE_001</span>
-        </div>
-        <div className="header-stat">
-          <span>UPTIME</span>
-          <span className="val">
-            {minutes}:{seconds}
-          </span>
-        </div>
-        <div className="header-stat">
-          <span>EVENTS</span>
-          <span className="val">{state.totalEvents}</span>
-        </div>
-      </header>
-
-      {/* LEFT PANEL – telemetry / triggers / map (static shell for now) */}
-      <div className="left-panel">
-        <div className="panel-header">
-          <span className="accent">▣</span> TELEMETRY · LIVE
-        </div>
-        <div className="metrics-section">
-          <button
-            type="button"
-            className="metric-card"
-          >
-            <div className="metric-label">Battery</div>
-            <div className="metric-value">
-              {Math.round(state.battery)}
-              <span className="metric-unit">%</span>
-            </div>
-            <div className="metric-bar">
-              <div
-                className="metric-fill"
-                style={{
-                  width: `${state.battery}%`,
-                  background: state.battery < 15 ? 'var(--red)' : state.battery < 30 ? 'var(--amber)' : 'var(--green)',
-                }}
-              />
-            </div>
-            <div className="metric-trend">
-              {state.battery < 15 ? '⚠ CRITICAL LOW' : state.battery < 30 ? '▼ low' : '▼ draining'}
-            </div>
-          </button>
-
-          <button
-            type="button"
-            className="metric-card"
-          >
-            <div className="metric-label">Wind</div>
-            <div className="metric-value">
-              {state.wind.toFixed(1)}
-              <span className="metric-unit">m/s</span>
-            </div>
-            <div className="metric-bar">
-              <div
-                className="metric-fill"
-                style={{
-                  width: `${(state.wind / 30) * 100}%`,
-                  background: state.wind > 24 ? 'var(--red)' : state.wind > 16 ? 'var(--amber)' : 'var(--green)',
-                }}
-              />
-            </div>
-            <div className="metric-trend">
-              {state.wind > 24 ? '▲ EXCEEDED' : state.wind > 16 ? '▲ HIGH' : 'stable'}
-            </div>
-          </button>
-
-          <button
-            type="button"
-            className="metric-card"
-          >
-            <div className="metric-label">Altitude</div>
-            <div className="metric-value">
-              {Math.round(state.alt)}
-              <span className="metric-unit">m</span>
-            </div>
-            <div className="metric-bar">
-              <div
-                className="metric-fill"
-                style={{
-                  width: `${(state.alt / 150) * 100}%`,
-                  background: 'var(--blue)',
-                }}
-              />
-            </div>
-            <div className="metric-trend">{state.alt > 120 ? '▲ HIGH' : 'holding'}</div>
-          </button>
-
-          <button
-            type="button"
-            className="metric-card"
-          >
-            <div className="metric-label">Wing Stab</div>
-            <div className="metric-value">{state.stab.toFixed(2)}</div>
-            <div className="metric-bar">
-              <div
-                className="metric-fill"
-                style={{
-                  width: `${state.stab * 100}%`,
-                  background: state.stab < 0.62 ? 'var(--red)' : state.stab < 0.82 ? 'var(--amber)' : 'var(--green)',
-                }}
-              />
-            </div>
-            <div className="metric-trend">
-              {state.stab < 0.62 ? '⚠ UNSTABLE' : state.stab < 0.82 ? '⚠ DEGRADED' : 'nominal'}
-            </div>
-          </button>
-
-          <button
-            type="button"
-            className="metric-card"
-          >
-            <div className="metric-label">GPS Sig</div>
-            <div className="metric-value">{state.gps.toFixed(2)}</div>
-            <div className="metric-bar">
-              <div
-                className="metric-fill"
-                style={{
-                  width: `${state.gps * 100}%`,
-                  background: state.gps < 0.25 ? 'var(--red)' : state.gps < 0.5 ? 'var(--amber)' : 'var(--green)',
-                }}
-              />
-            </div>
-            <div className="metric-trend">
-              {state.gps < 0.25 ? '⊘ LOSS' : state.gps < 0.5 ? '⚠ WEAK' : 'strong'}
-            </div>
-          </button>
-
-          <button
-            type="button"
-            className="metric-card"
-          >
-            <div className="metric-label">Temp</div>
-            <div className="metric-value">
-              {Math.round(state.temp)}
-              <span className="metric-unit">°C</span>
-            </div>
-            <div className="metric-bar">
-              <div
-                className="metric-fill"
-                style={{
-                  width: `${(state.temp / 80) * 100}%`,
-                  background: state.temp > 55 ? 'var(--red)' : state.temp > 45 ? 'var(--amber)' : 'var(--amber)',
-                }}
-              />
-            </div>
-            <div className="metric-trend">
-              {state.temp > 55 ? '⚠ CRITICAL' : state.temp > 45 ? '⚠ HOT' : 'normal'}
-            </div>
-          </button>
-        </div>
-
-        <div className="triggers-section">
-          <div className="triggers-label">INJECT DISTURBANCE</div>
-          <div className="trigger-grid">
-            <button
-              type="button"
-              className="trigger-btn"
-              onClick={() => inject('wind')}
-            >
-              <span className="t-name">⟳ Wind Spike</span>
-              <span className="t-effect">→ 26 m/s gust</span>
-            </button>
-            <button
-              type="button"
-              className="trigger-btn danger"
-              onClick={() => inject('bird')}
-            >
-              <span className="t-name">✕ Bird Strike</span>
-              <span className="t-effect">→ stab drop</span>
-            </button>
-            <button
-              type="button"
-              className="trigger-btn danger"
-              onClick={() => inject('battery')}
-            >
-              <span className="t-name">⚡ Batt Drop</span>
-              <span className="t-effect">→ critical 8%</span>
-            </button>
-            <button
-              type="button"
-              className="trigger-btn"
-              onClick={() => inject('gps')}
-            >
-              <span className="t-name">⊘ GPS Jam</span>
-              <span className="t-effect">→ signal loss</span>
-            </button>
-            <button
-              type="button"
-              className="trigger-btn"
-              onClick={() => inject('turbulence')}
-            >
-              <span className="t-name">≈ Turbulence</span>
-              <span className="t-effect">→ multi-axis</span>
-            </button>
-            <button
-              type="button"
-              className="trigger-btn danger"
-              onClick={() => inject('engine')}
-            >
-              <span className="t-name">⚠ Engine Vibe</span>
-              <span className="t-effect">→ mech fault</span>
-            </button>
+        // ─── RENDER AGENT PANEL ────────────────────────────────────────────────────────
+        function renderAgentPanel() {
+            const sec = document.getElementById('agent-section');
+            if (!sec) return;
+            if (agentCards.length === 0) {
+                sec.innerHTML = `<div style="padding:20px 12px;text-align:center;font-family:var(--mono);font-size:10px;color:var(--text-dim)">Agent monitoring...<br><br><div class="pulse-dot" style="margin:0 auto"></div></div>`;
+                return;
+            }
+            sec.innerHTML = agentCards.slice(-4).reverse().map((c, i) => `
+        <div class="agent-card ${c.severity}" id="agent-card-${i}">
+          <div class="agent-card-header">
+            <span class="agent-card-icon">${c.severity === 'crit' ? '⚠' : '▲'}</span>
+            <span class="agent-card-title">${c.title}</span>
+            <span class="agent-card-score ${c.severity === 'crit' ? 'score-crit' : c.severity === 'warn' ? 'score-warn' : 'score-ok'}">${c.risk.toFixed(2)}</span>
           </div>
-          <button
-            type="button"
-            className="trigger-reset"
-            onClick={() => inject('reset')}
-          >
-            ↺ RESET ALL SYSTEMS
-          </button>
-        </div>
-        <div className="map-section">
-          <div className="panel-header" style={{ padding: '6px 14px' }}>
-            <span className="accent">◎</span> FLIGHT PATH
+          <div class="agent-card-body">
+            ${c.body}
+            <div class="evidence">${c.issues.map((e: any) => `<span>${e.key}: </span><span>${e.val}</span>`).join(' · ')}</div>
           </div>
-          <div className="map-canvas-wrap">
-            <canvas ref={flightCanvasRef} />
+          <div class="cmd-block">
+            <div class="cmd-label">DECISION</div>
+            ${c.command}
           </div>
         </div>
-      </div>
+      `).join('');
 
-      {/* CENTER PANEL – main sim canvas + log stub */}
-      <div className="center-panel">
-        <div className="panel-header">
-          <span className="accent">◈</span> LIVE FLIGHT SIMULATION
-        </div>
-        <div className="flight-view">
-          <canvas ref={mainCanvasRef} />
-        </div>
-        <div className="log-section">
-          <div className="panel-header">
-            <span className="accent">≡</span> AGENT DECISION LOG
-            <span style={{ flex: 1 }} />
-            <span
-              style={{ fontSize: 8, color: 'var(--text-dim)' }}
-            >
-              {logs.length} entries
-            </span>
-          </div>
-          <div className="log-body">
-            {logs.slice(0, 60).map((log) => (
-              <div
-                key={log.id}
-                className={`log-entry ${log.level}`}
-              >
-                <span className="log-time">{log.time}</span>
-                <span className={`log-badge badge-${log.badge}`}>{log.badge.toUpperCase()}</span>
-                <span className="log-msg">{log.message}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+            agentCards.slice(-4).reverse().forEach((c, i) => {
+                const el = document.getElementById(`agent-card-${i}`);
+                if (el) el.onclick = () => openAgentModal(agentCards.length - 1 - i);
+            });
+        }
 
-      {/* RIGHT PANEL – agent cards stub */}
-      <div className="right-panel">
-        <div className="panel-header">
-          <span className="accent">◆</span> AI FLIGHT SAFETY AGENT
+        // ─── LOG SYSTEM ───────────────────────────────────────────────────────────────
+        function kw(text: string) {
+            if (!text) return "";
+            return text
+                .replace(/\b(RETURN_TO_HOME|EMERGENCY_DESCENT|EMERGENCY_LAND|ADVISORY|STABILIZE|CONTINUE|DIVERT)\b/g, '<span class="kw-cmd">$1</span>')
+                .replace(/\b(CRITICAL|FAILURE|COMPROMISED|LOSS|FAULT)\b/g, '<span class="kw-crit">$1</span>')
+                .replace(/\b(WARNING|ELEVATED|REDUCED|HIGH|EXCEEDED)\b/g, '<span class="kw-warn">$1</span>')
+                .replace(/\b(\d+\.?\d*\s*(?:m\/s|%|°C|m))\b/g, '<span class="kw-val">$1</span>')
+                .replace(/\b(Agent|Supervisor|Battery Agent|Wind Agent|Stability Agent|GPS Agent|Nemotron)\b/g, '<span class="kw-agent">$1</span>');
+        }
+
+        function addLog(type: string, badge: string, msg: string) {
+            const now = new Date();
+            const t = `${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).slice(0, 1)}`;
+            logEntries.unshift({ type, badge, msg: kw(msg), t });
+            if (logEntries.length > 120) logEntries.pop();
+            S.totalEvents++;
+            const evac = document.getElementById('hdr-events');
+            if (evac) evac.textContent = String(S.totalEvents);
+            renderLog();
+        }
+
+        function renderLog() {
+            const body = document.getElementById('log-body');
+            if (!body) return;
+            body.innerHTML = logEntries.slice(0, 50).map(e => `
+        <div class="log-entry ${e.type}">
+          <span class="log-time">${e.t}</span>
+          <span class="log-badge badge-${e.badge}">${e.badge.toUpperCase()}</span>
+          <span className="log-msg">${e.msg}</span>
         </div>
-        <div className="agent-section" id="agent-section">
-          <div
-            style={{
-              padding: '20px 12px',
-              textAlign: 'center',
-              fontFamily: 'var(--mono)',
-              fontSize: 10,
-              color: 'var(--text-dim)',
-            }}
-          >
-            Agent monitoring...
-            <br />
-            <br />
-            <div className="pulse-dot" style={{ margin: '0 auto' }} />
+      `).join('');
+            const countEl = document.getElementById('log-count');
+            if (countEl) countEl.textContent = logEntries.length + ' entries';
+        }
+
+        // ─── MODAL SYSTEM ─────────────────────────────────────────────────────────────
+        function openAgentModal(idx: number) {
+            const c = agentCards[idx];
+            if (!c) return;
+            const overlay = document.getElementById('modal-overlay');
+            if (!overlay) return;
+
+            const titleEl = document.getElementById('modal-title');
+            if (titleEl) titleEl.textContent = c.title;
+
+            const bodyEl = document.getElementById('modal-body');
+            if (bodyEl) bodyEl.innerHTML = `
+        <div class="modal-section">
+          <div class="modal-section-title">Evidence</div>
+          <div class="modal-text">${c.body}</div>
+        </div>
+        <div class="modal-section">
+          <div class="modal-section-title">Intervention Plan</div>
+          ${c.plan.map((p: any, i: number) => `
+            <div class="plan-step" style="display:flex;gap:10px;padding:5px 0;font-size:11px;">
+              <span style="color:var(--blue)">0${i + 1}</span>
+              <span style="flex:1">${p.text}</span>
+            </div>
+          `).join('')}
+        </div>
+        <div class="modal-section">
+          <div class="cmd-action-row" style="background:var(--bg);padding:10px;border:1px solid var(--blue-dim);display:flex;justify-content:space-between;align-items:center;">
+            <span style="color:var(--blue);font-family:var(--mono);font-size:10px;">${c.command}</span>
+            <button class="cmd-execute-btn" id="modal-execute-btn">EXECUTE</button>
           </div>
         </div>
-      </div>
-    </div>
-  );
+      `;
+
+            const execBtn = document.getElementById('modal-execute-btn');
+            if (execBtn) execBtn.onclick = () => {
+                executeCmd(c.command);
+                overlay.classList.remove('active');
+            };
+
+            overlay.classList.add('active');
+        }
+
+        function executeCmd(cmd: string) {
+            addLog('cmd', 'cmd', 'Operator executed: ' + cmd);
+            requestNemotronDecision('EXECUTE_COMMAND');
+        }
+
+        function inject(type: string) {
+            if (type === 'wind') { S.wind = 26; S.scenario = 'wind'; }
+            else if (type === 'bird') { S.stab = 0.55; S.scenario = 'bird'; }
+            else if (type === 'battery') { S.battery = 8; S.scenario = 'battery'; }
+            else if (type === 'gps') { S.gps = 0.15; S.scenario = 'gps'; }
+            else if (type === 'turbulence') { S.stab -= 0.1; S.wind += 10; S.scenario = 'turbulence'; }
+            else if (type === 'engine') { S.temp = 60; S.scenario = 'engine'; }
+            else if (type === 'reset') {
+                Object.assign(S, { battery: 78, wind: 6, alt: 95, stab: 0.96, gps: 0.95, temp: 32, scenario: null, lastIssues: [] });
+                agentCards = [];
+                renderAgentPanel();
+                addLog('ok', 'ok', 'Resetting all systems...');
+                return;
+            }
+            addLog('warn', 'warn', `Injecting disturbance: ${type.toUpperCase()}`);
+            requestNemotronDecision(`INJECT_${type.toUpperCase()}`);
+        }
+
+        function updateHUD() {
+            const setM = (id: string, val: string, pct: number, col: string) => {
+                const vel = document.getElementById('mv-' + id);
+                if (vel) vel.innerHTML = val;
+                const fel = document.getElementById('mf-' + id);
+                if (fel) { fel.style.width = Math.min(100, Math.max(0, pct)) + '%'; fel.style.background = col; }
+            };
+
+            setM('battery', Math.round(S.battery) + '%', S.battery, S.battery < 20 ? 'var(--red)' : 'var(--green)');
+            setM('wind', S.wind.toFixed(1) + ' m/s', (S.wind / 30) * 100, S.wind > 20 ? 'var(--red)' : 'var(--green)');
+            setM('alt', Math.round(S.alt) + 'm', (S.alt / 150) * 100, 'var(--blue)');
+            setM('stab', S.stab.toFixed(2), S.stab * 100, S.stab < 0.7 ? 'var(--red)' : 'var(--green)');
+            setM('gps', S.gps.toFixed(2), S.gps * 100, S.gps < 0.4 ? 'var(--red)' : 'var(--green)');
+            setM('temp', Math.round(S.temp) + '°C', (S.temp / 80) * 100, S.temp > 50 ? 'var(--red)' : 'var(--amber)');
+
+            const r = S.risk;
+            const riskEl = document.getElementById('risk-big');
+            if (riskEl) {
+                riskEl.textContent = r.toFixed(2);
+                riskEl.style.color = r > 0.7 ? 'var(--red)' : r > 0.4 ? 'var(--amber)' : 'var(--green)';
+            }
+            const ptr = document.getElementById('risk-ptr');
+            if (ptr) ptr.style.left = (r * 100) + '%';
+
+            const hstat = document.getElementById('hdr-status');
+            if (hstat) {
+                hstat.textContent = r > 0.7 ? 'CRITICAL' : r > 0.4 ? 'WARNING' : 'NOMINAL';
+                hstat.style.color = r > 0.7 ? 'var(--red)' : r > 0.4 ? 'var(--amber)' : 'var(--green)';
+            }
+
+            const sec = Math.floor((Date.now() - S.startTime) / 1000);
+            const m = String(Math.floor(sec / 60)).padStart(2, '0');
+            const s = String(sec % 60).padStart(2, '0');
+            const timeEl = document.getElementById('hdr-time');
+            if (timeEl) timeEl.textContent = m + ':' + s;
+        }
+
+        const mainCanvas = document.getElementById('mainCanvas') as HTMLCanvasElement;
+        const mainCtx = mainCanvas?.getContext('2d');
+        const flightCanvas = document.getElementById('flightCanvas') as HTMLCanvasElement;
+        const flightCtx = flightCanvas?.getContext('2d');
+
+        function draw() {
+            if (mainCtx && mainCanvas) {
+                const w = mainCanvas.width, h = mainCanvas.height;
+                mainCtx.fillStyle = '#080c10';
+                mainCtx.fillRect(0, 0, w, h);
+                mainCtx.strokeStyle = 'rgba(0,255,180,0.1)';
+                for (let i = 0; i < w; i += 40) { mainCtx.beginPath(); mainCtx.moveTo(i, 0); mainCtx.lineTo(i, h); mainCtx.stroke(); }
+                for (let i = 0; i < h; i += 40) { mainCtx.beginPath(); mainCtx.moveTo(0, i); mainCtx.lineTo(w, i); mainCtx.stroke(); }
+
+                mainCtx.fillStyle = S.risk > 0.7 ? 'var(--red)' : 'var(--green)';
+                mainCtx.beginPath();
+                S.x = w / 2 + Math.sin(S.tick * 0.05) * 100;
+                S.y = h / 2 + Math.cos(S.tick * 0.03) * 50;
+                mainCtx.arc(S.x, S.y, 10, 0, Math.PI * 2);
+                mainCtx.fill();
+            }
+            if (flightCtx && flightCanvas) {
+                const w = flightCanvas.width, h = flightCanvas.height;
+                flightCtx.fillStyle = '#131a21';
+                flightCtx.fillRect(0, 0, w, h);
+                flightPath.push({ x: w / 2 + Math.sin(S.tick * 0.02) * 60, y: h / 2 + Math.cos(S.tick * 0.01) * 40 });
+                if (flightPath.length > 100) flightPath.shift();
+                flightCtx.strokeStyle = 'var(--green)';
+                flightCtx.beginPath();
+                flightPath.forEach((p, i) => { if (i === 0) flightCtx.moveTo(p.x, p.y); else flightCtx.lineTo(p.x, p.y); });
+                flightCtx.stroke();
+            }
+        }
+
+        function tickTelemetry() {
+            S.tick++;
+            if (!S.scenario) {
+                S.battery = Math.max(5, S.battery - 0.05);
+                S.wind = 6 + Math.sin(S.tick * 0.1) * 3;
+                S.alt = 90 + Math.sin(S.tick * 0.05) * 10;
+            }
+            const prevRisk = S.risk;
+            S.risk = computeRisk();
+            if ((prevRisk < 0.4 && S.risk >= 0.4) || (prevRisk < 0.78 && S.risk >= 0.78)) requestNemotronDecision('THRESHOLD_CROSSING');
+            updateHUD();
+        }
+
+        const interval = setInterval(() => { tickTelemetry(); draw(); }, 100);
+
+        // Wire UI
+        const btns = document.querySelectorAll('.trigger-btn');
+        const types = ['wind', 'bird', 'battery', 'gps', 'turbulence', 'engine'];
+        btns.forEach((b: any, i) => b.onclick = () => inject(types[i]));
+        const rst = document.querySelector('.trigger-reset') as any;
+        if (rst) rst.onclick = () => inject('reset');
+
+        const mc = document.querySelectorAll('.metric-card');
+        const mtypes = ['battery', 'wind', 'alt', 'stab', 'gps', 'temp'];
+        mc.forEach((m: any, i) => m.onclick = () => alert(`Viewing ${mtypes[i]} history`));
+
+        return () => clearInterval(interval);
+    }, []);
+
+    return (
+        <>
+            <style dangerouslySetInnerHTML={{
+                __html: `
+        :root {
+          --bg: #080c10; --bg2: #0d1318; --bg3: #131a21;
+          --border: rgba(0,255,180,0.12); --border2: rgba(0,255,180,0.22);
+          --green: #00ffb4; --green-dim: rgba(0,255,180,0.15);
+          --amber: #ffb700; --amber-dim: rgba(255,183,0,0.15);
+          --red: #ff4444; --red-dim: rgba(255,68,68,0.15);
+          --blue: #4db8ff; --blue-dim: rgba(77,184,255,0.12);
+          --text: #c8d8e8; --text-dim: #5a7080; --text-bright: #e8f4ff;
+          --mono: 'IBM Plex Mono', monospace; --sans: 'IBM Plex Sans', sans-serif;
+        }
+        body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; margin: 0; overflow: hidden; }
+        body::before { content: ''; position: fixed; inset: 0; background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px); pointer-events: none; z-index: 1000; }
+        .layout { display: grid; grid-template-columns: 260px 1fr 300px; grid-template-rows: 48px 1fr; height: 100vh; }
+        .header { grid-column: 1 / -1; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 16px; }
+        .header-logo { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--green); letter-spacing: 0.15em; }
+        .header-stat { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); padding: 0 12px; border-left: 1px solid var(--border); }
+        .header-stat .val { color: var(--green); }
+        .left-panel, .right-panel { background: var(--bg2); border-color: var(--border); display: flex; flex-direction: column; }
+        .left-panel { border-right-width: 1px; border-right-style: solid; }
+        .right-panel { border-left-width: 1px; border-left-style: solid; }
+        .panel-header { font-family: var(--mono); font-size: 9px; padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-dim); }
+        .metrics-section { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px; border-bottom: 1px solid var(--border); }
+        .metric-card { background: var(--bg3); border: 1px solid var(--border); padding: 8px; border-radius: 4px; cursor: pointer; }
+        .metric-label { font-size: 8px; text-transform: uppercase; color: var(--text-dim); }
+        .metric-value { font-family: var(--mono); font-size: 16px; color: var(--text-bright); }
+        .metric-bar { height: 2px; background: var(--border); margin-top: 5px; }
+        .metric-fill { height: 100%; transition: width 0.3s; }
+        .risk-section { padding: 15px; border-bottom: 1px solid var(--border); }
+        .risk-score-big { font-family: var(--mono); font-size: 32px; font-weight: 500; }
+        .risk-bar-track { height: 4px; background: linear-gradient(to right, #00ffb4, #ffb700, #ff4444); position: relative; margin-top: 8px; }
+        .risk-pointer { position: absolute; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: #fff; border: 2px solid var(--bg); transform: translateX(-50%); }
+        .triggers-section { padding: 10px; }
+        .trigger-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+        .trigger-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 7px; font-size: 9px; cursor: pointer; text-align: left; }
+        .trigger-reset { width: 100%; margin-top: 5px; border: 1px solid var(--border); background: transparent; color: var(--text-dim); padding: 6px; font-size: 9px; cursor: pointer; }
+        .flight-view { flex: 1; min-height: 0; background: #000; position: relative; }
+        canvas { width: 100%; height: 100%; display: block; }
+        .log-section { height: 200px; display: flex; flex-direction: column; background: var(--bg2); border-top: 1px solid var(--border); }
+        .log-body { flex: 1; overflow-y: auto; padding: 10px; font-family: var(--mono); font-size: 10px; }
+        .agent-section { flex: 1; overflow-y: auto; padding: 5px; }
+        .agent-card { background: var(--bg3); border: 1px solid var(--border); margin: 5px; padding: 10px; border-radius: 4px; cursor: pointer; }
+        .agent-card.crit { border-color: var(--red); }
+        .agent-card.warn { border-color: var(--amber); }
+        .agent-card-header { display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 5px; font-family: var(--mono); }
+        .agent-card-body { font-size: 11px; line-height: 1.4; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 2000; }
+        .modal-overlay.active { display: flex; }
+        .modal { background: var(--bg2); border: 1px solid var(--border2); width: 450px; padding: 20px; color: var(--text); }
+        .modal-header { display: flex; justify-content: space-between; margin-bottom: 15px; }
+        .cmd-execute-btn { background: var(--blue); color: #000; border: none; padding: 5px 15px; cursor: pointer; font-weight: 600; font-size: 10px; }
+        .pulse-dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; }
+        .pulse-dot.red { background: var(--red); }
+        .pulse-dot.amber { background: var(--amber); }
+      ` }} />
+
+            <div className="layout">
+                <header className="header">
+                    <span className="header-logo">AFSM v2.2</span>
+                    <div style={{ flex: 1 }}></div>
+                    <div className="header-stat"><div id="hdr-dot" className="pulse-dot"></div><span>STATUS</span><span id="hdr-status" className="val">NOMINAL</span></div>
+                    <div className="header-stat"><span>UPTIME</span><span id="hdr-time" className="val">00:00</span></div>
+                    <div className="header-stat"><span>EVENTS</span><span id="hdr-events" className="val">0</span></div>
+                </header>
+
+                <div className="left-panel">
+                    <div className="panel-header">TELEMETRY</div>
+                    <div className="metrics-section">
+                        <div className="metric-card" id="mc-battery">
+                            <div className="metric-label">Battery</div>
+                            <div className="metric-value" id="mv-battery">78%</div>
+                            <div className="metric-bar"><div className="metric-fill" id="mf-battery" style={{ width: '78%', background: 'var(--green)' }}></div></div>
+                        </div>
+                        <div className="metric-card" id="mc-wind">
+                            <div className="metric-label">Wind</div>
+                            <div className="metric-value" id="mv-wind">6.0 m/s</div>
+                            <div className="metric-bar"><div className="metric-fill" id="mf-wind" style={{ width: '20%', background: 'var(--green)' }}></div></div>
+                        </div>
+                        <div className="metric-card" id="mc-alt">
+                            <div className="metric-label">Altitude</div>
+                            <div className="metric-value" id="mv-alt">95m</div>
+                            <div className="metric-bar"><div className="metric-fill" id="mf-alt" style={{ width: '63%', background: 'var(--blue)' }}></div></div>
+                        </div>
+                        <div className="metric-card" id="mc-stab">
+                            <div className="metric-label">Stability</div>
+                            <div className="metric-value" id="mv-stab">0.96</div>
+                            <div className="metric-bar"><div className="metric-fill" id="mf-stab" style={{ width: '96%', background: 'var(--green)' }}></div></div>
+                        </div>
+                    </div>
+                    <div className="risk-section">
+                        <div className="risk-score-big" id="risk-big">0.08</div>
+                        <div className="risk-bar-track"><div className="risk-pointer" id="risk-ptr" style={{ left: '8%' }}></div></div>
+                    </div>
+                    <div className="triggers-section">
+                        <div className="trigger-grid">
+                            <button className="trigger-btn">Wind Spike</button>
+                            <button className="trigger-btn">Bird Strike</button>
+                            <button className="trigger-btn">Batt Drop</button>
+                            <button className="trigger-btn">GPS Jam</button>
+                            <button className="trigger-btn">Turbulence</button>
+                            <button className="trigger-btn">Engine Vibe</button>
+                        </div>
+                        <button className="trigger-reset">RESET SYSTEMS</button>
+                    </div>
+                    <div style={{ flex: 1, padding: '10px' }}>
+                        <div className="panel-header" style={{ padding: '0 0 5px 0', border: 0 }}>FLIGHT PATH</div>
+                        <canvas id="flightCanvas" style={{ height: '120px', background: '#000' }}></canvas>
+                    </div>
+                </div>
+
+                <div className="center-panel" style={{ display: 'flex', flexDirection: 'column' }}>
+                    <div className="flight-view"><canvas id="mainCanvas"></canvas></div>
+                    <div className="log-section">
+                        <div className="panel-header">DECISION LOG <span id="log-count" style={{ float: 'right' }}>0 entries</span></div>
+                        <div className="log-body" id="log-body"></div>
+                    </div>
+                </div>
+
+                <div className="right-panel">
+                    <div className="panel-header">NEMOTRON AGENT</div>
+                    <div className="agent-section" id="agent-section"></div>
+                </div>
+            </div>
+
+            <div className="modal-overlay" id="modal-overlay">
+                <div className="modal">
+                    <div className="modal-header">
+                        <div id="modal-title" style={{ fontWeight: 600 }}>Analysis</div>
+                        <button className="modal-close" style={{ background: 0, border: 0, color: '#fff', cursor: 'pointer' }}>✕</button>
+                    </div>
+                    <div id="modal-body" style={{ fontSize: '12px', lineHeight: 1.5 }}></div>
+                </div>
+            </div>
+        </>
+    );
 }
