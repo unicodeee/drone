@@ -27,10 +27,72 @@ You must return a JSON object with this schema:
   "recommended_action": "CONTINUE|RETURN_TO_HOME|DIVERT|EMERGENCY_LAND|EMERGENCY_DESCENT",
   "target": {"alt_m": number, "landing_zone": "string", "home": boolean},
   "reasoning_bullets": ["string", "string", "string"],
-  "command": "string",
+  "command": "string (MUST start with 'CMD: ', e.g., 'CMD: RETURN_TO_HOME')",
   "next_check_seconds": number
 }
 `;
+
+function safeJsonParse(text: string) {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+}
+
+function clamp01(x: number) {
+    if (!Number.isFinite(x)) return 0;
+    return Math.max(0, Math.min(1, x));
+}
+
+function normalizeDecision(raw: any) {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const states = new Set(['NOMINAL', 'WARNING', 'CRITICAL']);
+    const actions = new Set(['CONTINUE', 'RETURN_TO_HOME', 'DIVERT', 'EMERGENCY_LAND', 'EMERGENCY_DESCENT']);
+
+    if (raw.agent !== 'safety_monitor') return null;
+    if (!states.has(raw.safety_state)) return null;
+    if (!actions.has(raw.recommended_action)) return null;
+
+    if (!Array.isArray(raw.reasoning_bullets) || raw.reasoning_bullets.length < 1) return null;
+
+    // Be slightly more lenient with CMD: prefix if it's missing but value is known
+    let command = typeof raw.command === 'string' ? raw.command : '';
+    if (command && !command.startsWith('CMD:')) {
+        command = 'CMD: ' + command;
+    }
+    if (!command.startsWith('CMD:')) return null;
+
+    const triggered = Array.isArray(raw.triggered_rules) ? raw.triggered_rules : [];
+
+    const decision = {
+        agent: 'safety_monitor' as const,
+        safety_state: raw.safety_state as 'NOMINAL' | 'WARNING' | 'CRITICAL',
+        risk_score: clamp01(Number(raw.risk_score)),
+        confidence: clamp01(Number(raw.confidence)),
+        triggered_rules: triggered
+            .filter((r: any) => r && typeof r === 'object')
+            .map((r: any) => ({
+                rule_id: String(r.rule_id ?? 'RULE'),
+                value: String(r.value ?? ''),
+                threshold: String(r.threshold ?? ''),
+            })),
+        recommended_action: raw.recommended_action as any,
+        target: raw.target && typeof raw.target === 'object'
+            ? {
+                alt_m: Number.isFinite(Number(raw.target.alt_m)) ? Number(raw.target.alt_m) : undefined,
+                landing_zone: typeof raw.target.landing_zone === 'string' ? raw.target.landing_zone : undefined,
+                home: typeof raw.target.home === 'boolean' ? raw.target.home : undefined,
+            }
+            : { alt_m: undefined, landing_zone: undefined, home: undefined },
+        reasoning_bullets: raw.reasoning_bullets.map((x: any) => String(x)).slice(0, 5),
+        command: command,
+        next_check_seconds: Math.max(2, Math.min(30, Number(raw.next_check_seconds ?? 5))),
+    };
+
+    return decision;
+}
 
 async function callOpenRouter(payload: any) {
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -38,11 +100,13 @@ async function callOpenRouter(payload: any) {
         headers: {
             'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
             'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/alex-p-gates/afsm-monitor', // Required by OpenRouter
+            'HTTP-Referer': 'https://github.com/alex-p-gates/afsm-monitor',
             'X-Title': 'AFSM Monitor',
         },
         body: JSON.stringify({
             model: OPENROUTER_MODEL,
+            temperature: 0.2,
+            max_tokens: 450,
             messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
                 { role: 'user', content: `Current Telemetry: ${JSON.stringify(payload.telemetry)}\nIssues Detected: ${JSON.stringify(payload.issues)}\nTrigger Event: ${payload.trigger}` }
@@ -58,15 +122,7 @@ async function callOpenRouter(payload: any) {
 
     const data = await response.json();
     const content = data.choices[0].message.content;
-    return JSON.parse(content);
-}
-
-function validateDecision(decision: any): boolean {
-    const requiredFields = ['agent', 'safety_state', 'risk_score', 'recommended_action', 'reasoning_bullets', 'command'];
-    for (const field of requiredFields) {
-        if (decision[field] === undefined) return false;
-    }
-    return true;
+    return safeJsonParse(content);
 }
 
 export async function POST(request: Request) {
@@ -77,14 +133,14 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
         }
 
-        let decision;
+        let decision: any = null;
         let attempts = 0;
+
         while (attempts < 2) {
             try {
-                decision = await callOpenRouter(payload);
-                if (validateDecision(decision)) {
-                    break;
-                }
+                const raw = await callOpenRouter(payload);
+                decision = normalizeDecision(raw);
+                if (decision) break;
             } catch (e) {
                 console.error(`Attempt ${attempts + 1} failed:`, e);
             }
@@ -92,7 +148,10 @@ export async function POST(request: Request) {
         }
 
         if (!decision) {
-            throw new Error('Failed to get valid decision from AI after retries');
+            return NextResponse.json(
+                { error: 'Failed to get valid decision from AI' },
+                { status: 502 }
+            );
         }
 
         return NextResponse.json(decision);
