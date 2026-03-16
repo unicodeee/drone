@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+type ScenarioType = 'wind' | 'bird' | 'battery' | 'gps' | 'turbulence' | 'engine' | null;
+
 interface TelemetryState {
   battery: number;
   wind: number;
@@ -10,6 +12,7 @@ interface TelemetryState {
   gps: number;
   temp: number;
   risk: number;
+  scenario: ScenarioType;
   startTime: number;
   totalEvents: number;
 }
@@ -32,6 +35,7 @@ const initialState: TelemetryState = {
   gps: 0.95,
   temp: 32,
   risk: 0.08,
+  scenario: null,
   startTime: Date.now(),
   totalEvents: 0,
 };
@@ -49,11 +53,44 @@ function computeRisk(s: TelemetryState): number {
   return Math.min(1, Math.max(0, r));
 }
 
+interface Cloud {
+  x: number;
+  y: number;
+  w: number;
+  spd: number;
+}
+interface Bird {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
+}
+
 export default function HomePage() {
   const [state, setState] = useState<TelemetryState>(initialState);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const flightCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const simRef = useRef({
+    x: 0,
+    y: 0,
+    heading: 0,
+    tick: 0,
+    clouds: [] as Cloud[],
+    birds: [] as Bird[],
+    particles: [] as Particle[],
+    cloudsInitialized: false,
+  });
 
   const addLog = (level: LogLevel, badge: LogEntry['badge'], message: string) => {
     const now = new Date();
@@ -80,7 +117,7 @@ export default function HomePage() {
         return { ...initialState, startTime: prev.startTime };
       }
 
-      let s = { ...prev };
+      let s: TelemetryState = { ...prev, scenario: type };
       if (type === 'wind') {
         s.wind = 26 + Math.random() * 3;
         addLog(
@@ -165,31 +202,274 @@ export default function HomePage() {
     return () => window.removeEventListener('resize', resize);
   }, []);
 
-  // Simple animation loop stub – you can paste
-  // your full drawMain / flightPath logic here later.
+  // Live flight simulation: full scene (sky, ground, clouds, wind, drone, HUD)
   useEffect(() => {
     const canvas = mainCanvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
 
     let frameId: number;
+    const sim = simRef.current;
 
     const render = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
-      grad.addColorStop(0, '#040810');
-      grad.addColorStop(1, '#0c1520');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const w = canvas.width;
+      const h = canvas.height;
+      const S = stateRef.current;
 
+      if (w <= 0 || h <= 0) {
+        frameId = requestAnimationFrame(render);
+        return;
+      }
+
+      if (!sim.cloudsInitialized || sim.clouds.length === 0) {
+        sim.cloudsInitialized = true;
+        sim.x = w / 2;
+        sim.y = h * 0.55;
+        sim.clouds = Array.from({ length: 8 }, () => ({
+          x: Math.random() * w,
+          y: 40 + Math.random() * 120,
+          w: 60 + Math.random() * 80,
+          spd: 0.2 + Math.random() * 0.3,
+        }));
+      }
+
+      sim.tick += 1;
+
+      // Sky gradient
+      const sky = ctx.createLinearGradient(0, 0, 0, h * 0.65);
+      sky.addColorStop(0, '#040810');
+      sky.addColorStop(0.5, '#080f1a');
+      sky.addColorStop(1, '#0c1520');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, w, h * 0.65);
+
+      // Ground
+      const grd = ctx.createLinearGradient(0, h * 0.65, 0, h);
+      grd.addColorStop(0, '#0a1505');
+      grd.addColorStop(1, '#060d04');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, h * 0.65, w, h * 0.35);
+
+      // Horizon
+      ctx.strokeStyle = 'rgba(0,255,180,0.07)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 8]);
+      ctx.beginPath();
+      ctx.moveTo(0, h * 0.65);
+      ctx.lineTo(w, h * 0.65);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Grid sky
+      ctx.strokeStyle = 'rgba(0,255,180,0.04)';
+      ctx.lineWidth = 0.5;
+      for (let gx = 0; gx < w; gx += 40) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, h * 0.65);
+        ctx.stroke();
+      }
+      for (let gy = 0; gy < h * 0.65; gy += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(w, gy);
+        ctx.stroke();
+      }
+
+      // Altitude indicator
+      const altPct = Math.min(1, S.alt / 150);
+      const altY = h * 0.65 - altPct * (h * 0.6);
+      ctx.strokeStyle = 'rgba(77,184,255,0.3)';
+      ctx.setLineDash([3, 6]);
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(0, altY);
+      ctx.lineTo(w, altY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(77,184,255,0.6)';
+      ctx.font = '9px IBM Plex Mono, monospace';
+      ctx.fillText(`${Math.round(S.alt)}m`, 4, altY - 3);
+
+      // Clouds
+      sim.clouds.forEach((cl) => {
+        cl.x += cl.spd * (1 + S.wind / 20);
+        if (cl.x > w + cl.w) cl.x = -cl.w;
+        const alpha = S.wind > 18 ? 0.12 : 0.07;
+        ctx.fillStyle = `rgba(100,180,255,${alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(cl.x, cl.y, cl.w / 2, cl.w / 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Wind lines
+      if (S.wind > 10) {
+        const wIntensity = (S.wind - 10) / 20;
+        for (let i = 0; i < 5; i++) {
+          const wy = 80 + i * 60;
+          const len = 30 + wIntensity * 60;
+          const offset = ((sim.tick * S.wind * 0.3 + i * 120) % (w + 100)) - 50;
+          ctx.strokeStyle = `rgba(77,184,255,${0.1 + wIntensity * 0.2})`;
+          ctx.lineWidth = 0.8;
+          ctx.setLineDash([len, 20 + Math.random() * 40]);
+          ctx.beginPath();
+          ctx.moveTo(offset, wy);
+          ctx.lineTo(offset + len, wy);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+
+      // Birds (bird strike scenario)
+      if (S.scenario === 'bird' && sim.birds.length === 0) {
+        sim.birds = Array.from({ length: 4 }, () => ({
+          x: Math.random() * w,
+          y: 80 + Math.random() * 100,
+          vx: -1.5 - Math.random(),
+          vy: 0.3 - Math.random() * 0.6,
+        }));
+      }
+      if (S.scenario !== 'bird') sim.birds = [];
+      sim.birds.forEach((b) => {
+        b.x += b.vx;
+        b.y += b.vy;
+        if (b.x < -20) b.x = w + 20;
+        ctx.strokeStyle = 'rgba(255,180,100,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(b.x - 6, b.y + 3);
+        ctx.quadraticCurveTo(b.x, b.y - 4, b.x + 6, b.y + 3);
+        ctx.stroke();
+      });
+
+      // Particles (turbulence / engine)
+      if (S.scenario === 'turbulence' || S.scenario === 'engine') {
+        for (let i = 0; i < 3; i++) {
+          sim.particles.push({
+            x: sim.x,
+            y: sim.y,
+            vx: (Math.random() - 0.5) * 3,
+            vy: (Math.random() - 0.5) * 3,
+            life: 40,
+            color: 'rgba(255,183,0,',
+          });
+        }
+      }
+      sim.particles = sim.particles.filter((p) => p.life > 0);
+      sim.particles.forEach((p) => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 1;
+        ctx.fillStyle = p.color + (p.life / 40) * 0.6 + ')';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Drone position (smooth follow)
+      const targetX =
+        w / 2 +
+        Math.sin(sim.tick * 0.012) * 180 +
+        (S.scenario === 'wind' ? Math.sin(sim.tick * 0.08) * 30 : 0);
+      const targetY =
+        h * 0.45 -
+        (S.alt - 50) * 1.2 +
+        Math.sin(sim.tick * 0.02) * 15 +
+        (S.stab < 0.75 ? Math.sin(sim.tick * 0.3) * 18 : 0);
+      sim.x += (targetX - sim.x) * 0.025;
+      sim.y += (targetY - sim.y) * 0.02;
+      sim.heading = Math.atan2(targetY - sim.y, targetX - sim.x);
+
+      // Thrust rings (rotors)
+      const rotorR = 14;
+      const thrustColor =
+        S.risk > 0.78
+          ? 'rgba(255,68,68,0.4)'
+          : S.risk > 0.38
+            ? 'rgba(255,183,0,0.3)'
+            : 'rgba(0,255,180,0.3)';
+      [
+        [-20, -10],
+        [20, -10],
+        [-20, 10],
+        [20, 10],
+      ].forEach(([ox, oy]) => {
+        const rx = sim.x + ox;
+        const ry = sim.y + oy;
+        ctx.strokeStyle = thrustColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(rx, ry, rotorR, 0, Math.PI * 2);
+        ctx.stroke();
+        const angle = sim.tick * 0.35;
+        ctx.strokeStyle = 'rgba(180,220,255,0.5)';
+        ctx.lineWidth = 1.5;
+        for (let r = 0; r < 2; r++) {
+          const a = angle + r * Math.PI;
+          ctx.beginPath();
+          ctx.moveTo(rx + Math.cos(a) * rotorR * 0.8, ry + Math.sin(a) * rotorR * 0.8);
+          ctx.lineTo(rx - Math.cos(a) * rotorR * 0.8, ry - Math.sin(a) * rotorR * 0.8);
+          ctx.stroke();
+        }
+      });
+
+      // Drone body
+      ctx.save();
+      ctx.translate(sim.x, sim.y);
+      ctx.rotate(sim.heading * 0.2);
+      const bodyColor =
+        S.risk > 0.78
+          ? 'rgba(255,68,68,0.9)'
+          : S.risk > 0.38
+            ? 'rgba(255,183,0,0.9)'
+            : 'rgba(0,255,180,0.9)';
+      ctx.fillStyle = bodyColor;
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(0, -8);
+      ctx.lineTo(14, 0);
+      ctx.lineTo(0, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(150,200,255,0.4)';
+      ctx.lineWidth = 1.5;
+      [
+        [-20, -10],
+        [20, -10],
+        [-20, 10],
+        [20, 10],
+      ].forEach(([ox, oy]) => {
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(ox, oy);
+        ctx.stroke();
+      });
+      const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, 30);
+      glow.addColorStop(
+        0,
+        S.risk > 0.78
+          ? 'rgba(255,68,68,0.15)'
+          : S.risk > 0.38
+            ? 'rgba(255,183,0,0.12)'
+            : 'rgba(0,255,180,0.1)',
+      );
+      glow.addColorStop(1, 'transparent');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(0, 0, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // HUD text
       ctx.fillStyle = 'rgba(0,255,180,0.8)';
       ctx.font = '11px IBM Plex Mono, monospace';
       ctx.fillText(
-        `RISK ${state.risk.toFixed(2)}  ALT ${Math.round(
-          state.alt,
-        )}m  WIND ${state.wind.toFixed(1)}m/s`,
-        16,
-        canvas.height - 20,
+        `RISK: ${S.risk.toFixed(3)}  ALT: ${Math.round(S.alt)}m  WIND: ${S.wind.toFixed(1)}m/s`,
+        10,
+        h - 10,
       );
 
       frameId = requestAnimationFrame(render);
@@ -197,7 +477,7 @@ export default function HomePage() {
 
     render();
     return () => cancelAnimationFrame(frameId);
-  }, [state.risk, state.alt, state.wind]);
+  }, []);
 
   // Simple ticking of uptime + recompute risk (no physics yet)
   useEffect(() => {
