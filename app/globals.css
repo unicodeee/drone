@@ -854,3 +854,11 @@ body::before {
 ::-webkit-scrollbar       { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── SPARKLINE ───────────────────────────────────────── */
+.sparkline-wrap {
+  margin-top: 5px;
+  border-top: 1px solid rgba(0,255,180,0.06);
+  padding-top: 3px;
+  overflow: hidden;
+}

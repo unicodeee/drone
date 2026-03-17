@@ -99,6 +99,179 @@ interface Bird { x: number; y: number; vx: number; vy: number; }
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; color: string; }
 
 const MODEL_LABEL = 'nvidia/nemotron-nano-9b-v2';
+const HISTORY_LEN = 40;
+
+type MetricKey = 'battery' | 'wind' | 'alt' | 'stab' | 'gps' | 'temp';
+
+interface TelemetryHistory {
+    battery: number[];
+    wind: number[];
+    alt: number[];
+    stab: number[];
+    gps: number[];
+    temp: number[];
+}
+
+// ── Sparkline SVG component ──────────────────────────────────────────────────
+function Sparkline({ values, color, warnVal, critVal, maxVal, minVal = 0 }: {
+    values: number[];
+    color: string;
+    warnVal?: number;
+    critVal?: number;
+    maxVal: number;
+    minVal?: number;
+}) {
+    if (values.length < 2) return <svg width="100%" height="22" />;
+    const W = 110, H = 22;
+    const range = maxVal - minVal || 1;
+    const toY = (v: number) => H - ((v - minVal) / range) * H;
+    const toX = (i: number) => (i / (HISTORY_LEN - 1)) * W;
+
+    const pts = values.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ');
+    const last = values[values.length - 1];
+    const lineColor = critVal !== undefined && last <= critVal
+        ? 'var(--red)'
+        : warnVal !== undefined && last <= warnVal
+            ? 'var(--amber)'
+            : critVal !== undefined && last >= critVal
+                ? 'var(--red)'
+                : warnVal !== undefined && last >= warnVal
+                    ? 'var(--amber)'
+                    : color;
+
+    return (
+        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block' }}>
+            {/* fill area */}
+            <defs>
+                <linearGradient id={`sg-${color.replace(/[^a-z]/gi, '')}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={lineColor} stopOpacity="0.25" />
+                    <stop offset="100%" stopColor={lineColor} stopOpacity="0.02" />
+                </linearGradient>
+            </defs>
+            <polygon
+                points={`${toX(0).toFixed(1)},${H} ${pts} ${toX(values.length - 1).toFixed(1)},${H}`}
+                fill={`url(#sg-${color.replace(/[^a-z]/gi, '')})`}
+            />
+            {/* warn threshold */}
+            {warnVal !== undefined && (
+                <line x1="0" y1={toY(warnVal)} x2={W} y2={toY(warnVal)}
+                      stroke="var(--amber)" strokeWidth="0.5" strokeDasharray="2,3" opacity="0.5" />
+            )}
+            {/* crit threshold */}
+            {critVal !== undefined && (
+                <line x1="0" y1={toY(critVal)} x2={W} y2={toY(critVal)}
+                      stroke="var(--red)" strokeWidth="0.5" strokeDasharray="2,3" opacity="0.5" />
+            )}
+            {/* line */}
+            <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="1.2" strokeLinejoin="round" strokeLinecap="round" />
+            {/* last dot */}
+            <circle cx={toX(values.length - 1)} cy={toY(last)} r="1.8" fill={lineColor} />
+        </svg>
+    );
+}
+
+// ── Full chart in modal ──────────────────────────────────────────────────────
+function TelemetryChart({ values, color, warnVal, critVal, maxVal, minVal = 0, unit }: {
+    values: number[];
+    color: string;
+    warnVal?: number;
+    critVal?: number;
+    maxVal: number;
+    minVal?: number;
+    unit: string;
+}) {
+    if (values.length < 2) return <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontFamily: 'var(--mono)', fontSize: 10 }}>Collecting data…</div>;
+    const W = 520, H = 90;
+    const PAD = { t: 8, r: 8, b: 20, l: 36 };
+    const cW = W - PAD.l - PAD.r;
+    const cH = H - PAD.t - PAD.b;
+    const range = maxVal - minVal || 1;
+    const toY = (v: number) => PAD.t + cH - ((v - minVal) / range) * cH;
+    const toX = (i: number) => PAD.l + (i / (HISTORY_LEN - 1)) * cW;
+
+    const pts = values.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ');
+    const last = values[values.length - 1];
+    const lineColor = critVal !== undefined && (last <= critVal || last >= critVal * 1.0)
+        ? (critVal < warnVal! ? (last <= critVal ? 'var(--red)' : last <= warnVal! ? 'var(--amber)' : color)
+            : (last >= critVal ? 'var(--red)' : last >= (warnVal ?? 0) ? 'var(--amber)' : color))
+        : color;
+
+    // y-axis ticks
+    const ticks = 4;
+    const tickVals = Array.from({ length: ticks + 1 }, (_, i) => minVal + (range / ticks) * i);
+
+    return (
+        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" style={{ display: 'block', overflow: 'visible' }}>
+            <defs>
+                <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={lineColor} stopOpacity="0.2" />
+                    <stop offset="100%" stopColor={lineColor} stopOpacity="0.01" />
+                </linearGradient>
+                <clipPath id="chart-clip">
+                    <rect x={PAD.l} y={PAD.t} width={cW} height={cH} />
+                </clipPath>
+            </defs>
+
+            {/* grid lines */}
+            {tickVals.map((v, i) => (
+                <g key={i}>
+                    <line x1={PAD.l} y1={toY(v)} x2={PAD.l + cW} y2={toY(v)}
+                          stroke="rgba(0,255,180,0.06)" strokeWidth="0.5" />
+                    <text x={PAD.l - 4} y={toY(v) + 3} textAnchor="end"
+                          fill="rgba(90,112,128,0.8)" fontSize="7" fontFamily="IBM Plex Mono, monospace">
+                        {v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}
+                    </text>
+                </g>
+            ))}
+
+            {/* time axis labels */}
+            {[0, 10, 20, 30, 39].map((idx) => (
+                values[idx] !== undefined && (
+                    <text key={idx} x={toX(idx)} y={H - 4} textAnchor="middle"
+                          fill="rgba(90,112,128,0.7)" fontSize="7" fontFamily="IBM Plex Mono, monospace">
+                        -{(HISTORY_LEN - 1 - idx)}s
+                    </text>
+                )
+            ))}
+
+            {/* warn threshold */}
+            {warnVal !== undefined && (
+                <g clipPath="url(#chart-clip)">
+                    <line x1={PAD.l} y1={toY(warnVal)} x2={PAD.l + cW} y2={toY(warnVal)}
+                          stroke="var(--amber)" strokeWidth="0.8" strokeDasharray="4,4" opacity="0.6" />
+                    <text x={PAD.l + cW - 2} y={toY(warnVal) - 2} textAnchor="end"
+                          fill="var(--amber)" fontSize="7" fontFamily="IBM Plex Mono, monospace" opacity="0.8">WARN</text>
+                </g>
+            )}
+            {/* crit threshold */}
+            {critVal !== undefined && (
+                <g clipPath="url(#chart-clip)">
+                    <line x1={PAD.l} y1={toY(critVal)} x2={PAD.l + cW} y2={toY(critVal)}
+                          stroke="var(--red)" strokeWidth="0.8" strokeDasharray="4,4" opacity="0.6" />
+                    <text x={PAD.l + cW - 2} y={toY(critVal) - 2} textAnchor="end"
+                          fill="var(--red)" fontSize="7" fontFamily="IBM Plex Mono, monospace" opacity="0.8">CRIT</text>
+                </g>
+            )}
+
+            {/* fill */}
+            <polygon clipPath="url(#chart-clip)"
+                     points={`${toX(0).toFixed(1)},${PAD.t + cH} ${pts} ${toX(values.length - 1).toFixed(1)},${PAD.t + cH}`}
+                     fill="url(#chart-fill)" />
+
+            {/* line */}
+            <polyline clipPath="url(#chart-clip)"
+                      points={pts} fill="none" stroke={lineColor} strokeWidth="1.5"
+                      strokeLinejoin="round" strokeLinecap="round" />
+
+            {/* last value dot + label */}
+            <circle cx={toX(values.length - 1)} cy={toY(last)} r="3" fill={lineColor} />
+            <text x={toX(values.length - 1) + 5} y={toY(last) + 3}
+                  fill={lineColor} fontSize="9" fontFamily="IBM Plex Mono, monospace" fontWeight="500">
+                {last % 1 === 0 ? last.toFixed(0) : last.toFixed(2)}{unit}
+            </text>
+        </svg>
+    );
+}
 
 export default function HomePage() {
     const [mounted, setMounted] = useState(false);
@@ -106,8 +279,10 @@ export default function HomePage() {
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [agentCards, setAgentCards] = useState<AgentCard[]>([]);
     const [selectedCard, setSelectedCard] = useState<AgentCard | null>(null);
-    type MetricKey = 'battery' | 'wind' | 'alt' | 'stab' | 'gps' | 'temp';
     const [selectedMetric, setSelectedMetric] = useState<MetricKey | null>(null);
+    const [history, setHistory] = useState<TelemetryHistory>({
+        battery: [], wind: [], alt: [], stab: [], gps: [], temp: [],
+    });
 
     const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const stateRef = useRef(state);
@@ -207,6 +382,7 @@ export default function HomePage() {
                 addLogRef.current('ok', 'ok', 'System RESET — all parameters restored to nominal baseline');
                 setAgentCards([]);
                 setLogs([]);
+                setHistory({ battery: [], wind: [], alt: [], stab: [], gps: [], temp: [] });
                 return { ...initialState, startTime: prev.startTime };
             }
             let s: TelemetryState = { ...prev, scenario: type };
@@ -429,6 +605,22 @@ export default function HomePage() {
         return () => clearInterval(id);
     }, []);
 
+    // History sampling — 1 sample/sec, keep last HISTORY_LEN points
+    useEffect(() => {
+        const id = setInterval(() => {
+            const S = stateRef.current;
+            setHistory((prev) => ({
+                battery: [...prev.battery, S.battery].slice(-HISTORY_LEN),
+                wind:    [...prev.wind,    S.wind].slice(-HISTORY_LEN),
+                alt:     [...prev.alt,     S.alt].slice(-HISTORY_LEN),
+                stab:    [...prev.stab,    S.stab].slice(-HISTORY_LEN),
+                gps:     [...prev.gps,     S.gps].slice(-HISTORY_LEN),
+                temp:    [...prev.temp,    S.temp].slice(-HISTORY_LEN),
+            }));
+        }, 1000);
+        return () => clearInterval(id);
+    }, []);
+
     // Periodic nominal log
     useEffect(() => {
         if (!mounted) return;
@@ -477,18 +669,27 @@ export default function HomePage() {
                 <div className="panel-header"><span className="accent">▣</span> TELEMETRY · LIVE</div>
                 <div className="metrics-section">
                     {([
-                        { key: 'battery' as MetricKey, label: 'Battery', val: Math.round(state.battery), unit: '%', pct: state.battery, col: state.battery < 15 ? 'var(--red)' : state.battery < 30 ? 'var(--amber)' : 'var(--green)', trend: state.battery < 15 ? '⚠ CRITICAL LOW' : state.battery < 30 ? '▼ low' : '▼ draining' },
-                        { key: 'wind' as MetricKey, label: 'Wind', val: state.wind.toFixed(1), unit: 'm/s', pct: (state.wind / 30) * 100, col: state.wind > 24 ? 'var(--red)' : state.wind > 16 ? 'var(--amber)' : 'var(--green)', trend: state.wind > 24 ? '▲ EXCEEDED' : state.wind > 16 ? '▲ HIGH' : 'stable' },
-                        { key: 'alt' as MetricKey, label: 'Altitude', val: Math.round(state.alt), unit: 'm', pct: (state.alt / 150) * 100, col: 'var(--blue)', trend: state.alt > 120 ? '▲ HIGH' : 'holding' },
-                        { key: 'stab' as MetricKey, label: 'Wing Stab', val: state.stab.toFixed(2), unit: '', pct: state.stab * 100, col: state.stab < 0.62 ? 'var(--red)' : state.stab < 0.82 ? 'var(--amber)' : 'var(--green)', trend: state.stab < 0.62 ? '⚠ UNSTABLE' : state.stab < 0.82 ? '⚠ DEGRADED' : 'nominal' },
-                        { key: 'gps' as MetricKey, label: 'GPS Sig', val: state.gps.toFixed(2), unit: '', pct: state.gps * 100, col: state.gps < 0.25 ? 'var(--red)' : state.gps < 0.5 ? 'var(--amber)' : 'var(--green)', trend: state.gps < 0.25 ? '⊘ LOSS' : state.gps < 0.5 ? '⚠ WEAK' : 'strong' },
-                        { key: 'temp' as MetricKey, label: 'Temp', val: Math.round(state.temp), unit: '°C', pct: (state.temp / 80) * 100, col: state.temp > 55 ? 'var(--red)' : 'var(--amber)', trend: state.temp > 55 ? '⚠ CRITICAL' : state.temp > 45 ? '⚠ HOT' : 'normal' },
+                        { key: 'battery' as MetricKey, label: 'Battery',  val: Math.round(state.battery),   unit: '%',   pct: state.battery,            col: state.battery < 15 ? 'var(--red)' : state.battery < 30 ? 'var(--amber)' : 'var(--green)', trend: state.battery < 15 ? '⚠ CRITICAL LOW' : state.battery < 30 ? '▼ low' : '▼ draining', sparkMax: 100, sparkWarn: 20,   sparkCrit: 10   },
+                        { key: 'wind'    as MetricKey, label: 'Wind',     val: state.wind.toFixed(1),        unit: 'm/s', pct: (state.wind / 30) * 100,  col: state.wind > 24 ? 'var(--red)' : state.wind > 16 ? 'var(--amber)' : 'var(--green)',       trend: state.wind > 24 ? '▲ EXCEEDED' : state.wind > 16 ? '▲ HIGH' : 'stable',           sparkMax: 35,  sparkWarn: 16,   sparkCrit: 24   },
+                        { key: 'alt'     as MetricKey, label: 'Altitude', val: Math.round(state.alt),        unit: 'm',   pct: (state.alt / 150) * 100,  col: 'var(--blue)',                                                                            trend: state.alt > 120 ? '▲ HIGH' : 'holding',                                           sparkMax: 150, sparkWarn: undefined, sparkCrit: undefined },
+                        { key: 'stab'    as MetricKey, label: 'Wing Stab',val: state.stab.toFixed(2),        unit: '',    pct: state.stab * 100,         col: state.stab < 0.62 ? 'var(--red)' : state.stab < 0.82 ? 'var(--amber)' : 'var(--green)',   trend: state.stab < 0.62 ? '⚠ UNSTABLE' : state.stab < 0.82 ? '⚠ DEGRADED' : 'nominal', sparkMax: 1,   sparkWarn: 0.82, sparkCrit: 0.62 },
+                        { key: 'gps'     as MetricKey, label: 'GPS Sig',  val: state.gps.toFixed(2),         unit: '',    pct: state.gps * 100,          col: state.gps < 0.25 ? 'var(--red)' : state.gps < 0.5 ? 'var(--amber)' : 'var(--green)',     trend: state.gps < 0.25 ? '⊘ LOSS' : state.gps < 0.5 ? '⚠ WEAK' : 'strong',             sparkMax: 1,   sparkWarn: 0.5,  sparkCrit: 0.25 },
+                        { key: 'temp'    as MetricKey, label: 'Temp',     val: Math.round(state.temp),       unit: '°C',  pct: (state.temp / 80) * 100,  col: state.temp > 55 ? 'var(--red)' : 'var(--amber)',                                         trend: state.temp > 55 ? '⚠ CRITICAL' : state.temp > 45 ? '⚠ HOT' : 'normal',           sparkMax: 80,  sparkWarn: 45,   sparkCrit: 55   },
                     ] as const).map((m) => (
                         <button key={m.key} type="button" className="metric-card" onClick={() => setSelectedMetric(m.key)}>
                             <div className="metric-label">{m.label}</div>
                             <div className="metric-value">{m.val}<span className="metric-unit">{m.unit}</span></div>
                             <div className="metric-bar"><div className="metric-fill" style={{ width: `${m.pct}%`, background: m.col }} /></div>
                             <div className="metric-trend">{m.trend}</div>
+                            <div className="sparkline-wrap">
+                                <Sparkline
+                                    values={history[m.key]}
+                                    color={m.col}
+                                    maxVal={m.sparkMax}
+                                    warnVal={m.sparkWarn}
+                                    critVal={m.sparkCrit}
+                                />
+                            </div>
                         </button>
                     ))}
                 </div>
@@ -684,8 +885,15 @@ export default function HomePage() {
                                 </div>
                             </div>
                             <div className="modal-section">
-                                <div className="modal-section-title">RECENT HISTORY (LAST 20 READINGS)</div>
-                                <div className="modal-text modal-hint">Click on telemetry cards to view real-time trends.</div>
+                                <div className="modal-section-title">LAST {HISTORY_LEN}s HISTORY</div>
+                                <div style={{ padding: '8px 0 4px' }}>
+                                    {selectedMetric === 'battery' && <TelemetryChart values={history.battery} color="var(--green)" warnVal={20} critVal={10} maxVal={100} unit="%" />}
+                                    {selectedMetric === 'wind'    && <TelemetryChart values={history.wind}    color="var(--blue)"  warnVal={16} critVal={24} maxVal={35}  unit="m/s" />}
+                                    {selectedMetric === 'alt'     && <TelemetryChart values={history.alt}     color="var(--blue)"  maxVal={150} minVal={0}   unit="m" />}
+                                    {selectedMetric === 'stab'    && <TelemetryChart values={history.stab}    color="var(--green)" warnVal={0.82} critVal={0.62} maxVal={1} minVal={0} unit="" />}
+                                    {selectedMetric === 'gps'     && <TelemetryChart values={history.gps}     color="var(--green)" warnVal={0.5}  critVal={0.25} maxVal={1} minVal={0} unit="" />}
+                                    {selectedMetric === 'temp'    && <TelemetryChart values={history.temp}    color="var(--amber)" warnVal={45}  critVal={55}  maxVal={80}  unit="°C" />}
+                                </div>
                             </div>
                         </div>
                     </div>
