@@ -267,7 +267,7 @@ export default function HomePage() {
   const inject = (type: 'wind' | 'bird' | 'battery' | 'gps' | 'turbulence' | 'engine' | 'reset') => {
     setState((prev) => {
       if (type === 'reset') {
-        addLog('ok', 'ok', 'System RESET — all parameters restored to nominal baseline');
+        setLogs([]);
         return { ...initialState, startTime: prev.startTime };
       }
 
