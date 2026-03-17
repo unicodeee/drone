@@ -229,6 +229,83 @@ body::before {
   color: var(--text-dim);
 }
 
+/* Risk gauge section (SAFE / risk bar) */
+.risk-section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.risk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.risk-score-big {
+  font-family: var(--mono);
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1;
+  transition: color 0.3s;
+}
+.risk-label-col {
+  flex: 1;
+}
+.risk-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  margin-bottom: 3px;
+}
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 3px 8px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+.mode-advisory {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-dim);
+}
+.mode-autonomous {
+  border-color: var(--red);
+  color: var(--red);
+  background: var(--red-dim);
+}
+.risk-conf {
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+.conf-val {
+  color: var(--text);
+}
+.risk-bar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--green) 0%, var(--amber) 50%, var(--red) 100%);
+  position: relative;
+  margin-top: 6px;
+}
+.risk-pointer {
+  position: absolute;
+  top: -3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid var(--bg);
+  transform: translateX(-50%);
+  transition: left 0.3s ease;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+}
+
 .triggers-section {
   padding: 10px;
   border-bottom: 1px solid var(--border);
@@ -257,6 +334,9 @@ body::before {
   text-align: left;
   transition: all 0.15s;
   line-height: 1.4;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 .trigger-btn:hover {
   border-color: var(--amber);
@@ -267,6 +347,16 @@ body::before {
   border-color: var(--red);
   color: var(--red);
   background: var(--red-dim);
+}
+.trigger-icon {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+.trigger-text {
+  flex: 1;
+  min-width: 0;
 }
 .trigger-btn .t-name {
   font-weight: 500;
@@ -290,6 +380,13 @@ body::before {
   transition: all 0.15s;
   letter-spacing: 0.1em;
   margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.trigger-reset-icon {
+  font-size: 12px;
 }
 .trigger-reset:hover {
   border-color: var(--green);

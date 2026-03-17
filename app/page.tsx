@@ -681,6 +681,11 @@ export default function HomePage() {
   const seconds = String(uptimeSeconds % 60).padStart(2, '0');
 
   const riskLabel = state.risk > 0.78 ? 'CRITICAL' : state.risk > 0.38 ? 'WARNING' : 'NOMINAL';
+  const riskStatusText = state.risk > 0.78 ? 'CRITICAL' : state.risk > 0.38 ? 'WARNING' : 'SAFE';
+  const riskColor =
+    state.risk > 0.78 ? 'var(--red)' : state.risk > 0.38 ? 'var(--amber)' : 'var(--green)';
+  const confPct = Math.round((1 - state.risk) * 100);
+  const riskPointerLeft = Math.min(92, Math.max(4, state.risk * 92 + 4));
 
   return (
     <div className="layout">
@@ -853,6 +858,44 @@ export default function HomePage() {
           </button>
         </div>
 
+        <div className="risk-section">
+          <div className="risk-row">
+            <div
+              className="risk-score-big"
+              style={{ color: riskColor }}
+            >
+              {state.risk.toFixed(2)}
+            </div>
+            <div className="risk-label-col">
+              <div
+                className="risk-status"
+                style={{ color: riskColor }}
+              >
+                {riskStatusText}
+              </div>
+              <div
+                className={`mode-badge ${
+                  state.risk > 0.78 ? 'mode-autonomous' : 'mode-advisory'
+                }`}
+              >
+                <span className="pulse-dot" />
+                <span className="mode-text">
+                  {state.risk > 0.78 ? 'AUTONOMOUS MODE' : 'ADVISORY MODE'}
+                </span>
+              </div>
+              <div className="risk-conf">
+                CONF: <span className="conf-val">{confPct}%</span>
+              </div>
+            </div>
+          </div>
+          <div className="risk-bar-track">
+            <div
+              className="risk-pointer"
+              style={{ left: `${riskPointerLeft}%` }}
+            />
+          </div>
+        </div>
+
         <div className="triggers-section">
           <div className="triggers-label">INJECT DISTURBANCE</div>
           <div className="trigger-grid">
@@ -861,48 +904,66 @@ export default function HomePage() {
               className="trigger-btn"
               onClick={() => inject('wind')}
             >
-              <span className="t-name">⟳ Wind Spike</span>
-              <span className="t-effect">→ 26 m/s gust</span>
+              <span className="trigger-icon" aria-hidden>⟳</span>
+              <span className="trigger-text">
+                <span className="t-name">Wind Spike</span>
+                <span className="t-effect">→ 26 m/s gust</span>
+              </span>
             </button>
             <button
               type="button"
               className="trigger-btn danger"
               onClick={() => inject('bird')}
             >
-              <span className="t-name">✕ Bird Strike</span>
-              <span className="t-effect">→ stab drop</span>
+              <span className="trigger-icon" aria-hidden>✕</span>
+              <span className="trigger-text">
+                <span className="t-name">Bird Strike</span>
+                <span className="t-effect">→ stab drop</span>
+              </span>
             </button>
             <button
               type="button"
               className="trigger-btn danger"
               onClick={() => inject('battery')}
             >
-              <span className="t-name">⚡ Batt Drop</span>
-              <span className="t-effect">→ critical 8%</span>
+              <span className="trigger-icon" aria-hidden>⚡</span>
+              <span className="trigger-text">
+                <span className="t-name">Batt Drop</span>
+                <span className="t-effect">→ critical 8%</span>
+              </span>
             </button>
             <button
               type="button"
               className="trigger-btn"
               onClick={() => inject('gps')}
             >
-              <span className="t-name">⊘ GPS Jam</span>
-              <span className="t-effect">→ signal loss</span>
+              <span className="trigger-icon" aria-hidden>⊘</span>
+              <span className="trigger-text">
+                <span className="t-name">GPS Jam</span>
+                <span className="t-effect">→ signal loss</span>
+              </span>
             </button>
             <button
               type="button"
               className="trigger-btn"
               onClick={() => inject('turbulence')}
             >
-              <span className="t-name">≈ Turbulence</span>
-              <span className="t-effect">→ multi-axis</span>
+              <span className="trigger-icon" aria-hidden>≈</span>
+              <span className="trigger-text">
+                <span className="t-name">Turbulence</span>
+                <span className="t-effect">→ multi-axis</span>
+              </span>
             </button>
             <button
               type="button"
               className="trigger-btn danger"
               onClick={() => inject('engine')}
             >
-              <span className="t-name">⚠ Engine Vibe</span>
-              <span className="t-effect">→ mech fault</span>
+              <span className="trigger-icon" aria-hidden>⚠</span>
+              <span className="trigger-text">
+                <span className="t-name">Engine Vibe</span>
+                <span className="t-effect">→ mech fault</span>
+              </span>
             </button>
           </div>
           <button
@@ -910,7 +971,8 @@ export default function HomePage() {
             className="trigger-reset"
             onClick={() => inject('reset')}
           >
-            ↺ RESET ALL SYSTEMS
+            <span className="trigger-reset-icon" aria-hidden>↺</span>
+            RESET ALL SYSTEMS
           </button>
         </div>
       </div>
