@@ -40,17 +40,167 @@ const initialState: TelemetryState = {
   totalEvents: 0,
 };
 
-function computeRisk(s: TelemetryState): number {
+interface TelemetryIssue {
+  key: string;
+  val: string;
+  threshold: string;
+  delta: string;
+}
+
+function computeRiskAndIssues(s: TelemetryState): { risk: number; issues: TelemetryIssue[] } {
   let r = 0;
-  if (s.battery < 8) r += 0.5;
-  else if (s.battery < 20) r += 0.28;
-  if (s.wind > 24) r += 0.38;
-  else if (s.wind > 16) r += 0.22;
-  if (s.stab < 0.62) r += 0.35;
-  else if (s.stab < 0.82) r += 0.18;
-  if (s.gps < 0.25) r += 0.28;
-  if (s.temp > 52) r += 0.15;
-  return Math.min(1, Math.max(0, r));
+  const issues: TelemetryIssue[] = [];
+  if (s.battery < 8) {
+    r += 0.5;
+    issues.push({
+      key: 'BATTERY_CRITICAL',
+      val: s.battery.toFixed(0) + '%',
+      threshold: '10%',
+      delta: '+' + (10 - s.battery).toFixed(1) + '%',
+    });
+  } else if (s.battery < 20) {
+    r += 0.28;
+    issues.push({
+      key: 'BATTERY_LOW',
+      val: s.battery.toFixed(0) + '%',
+      threshold: '20%',
+      delta: '+' + (20 - s.battery).toFixed(1) + '%',
+    });
+  }
+  if (s.wind > 24) {
+    r += 0.38;
+    issues.push({
+      key: 'WIND_CRITICAL',
+      val: s.wind.toFixed(1) + 'm/s',
+      threshold: '24m/s',
+      delta: '+' + (s.wind - 24).toFixed(1),
+    });
+  } else if (s.wind > 16) {
+    r += 0.22;
+    issues.push({
+      key: 'HIGH_WIND',
+      val: s.wind.toFixed(1) + 'm/s',
+      threshold: '16m/s',
+      delta: '+' + (s.wind - 16).toFixed(1),
+    });
+  }
+  if (s.stab < 0.62) {
+    r += 0.35;
+    issues.push({
+      key: 'WING_INSTABILITY',
+      val: s.stab.toFixed(2),
+      threshold: '0.75',
+      delta: (s.stab - 0.75).toFixed(2),
+    });
+  } else if (s.stab < 0.82) {
+    r += 0.18;
+    issues.push({
+      key: 'REDUCED_STABILITY',
+      val: s.stab.toFixed(2),
+      threshold: '0.82',
+      delta: (s.stab - 0.82).toFixed(2),
+    });
+  }
+  if (s.gps < 0.25) {
+    r += 0.28;
+    issues.push({
+      key: 'GPS_SIGNAL_LOSS',
+      val: s.gps.toFixed(2),
+      threshold: '0.40',
+      delta: (s.gps - 0.4).toFixed(2),
+    });
+  }
+  if (s.temp > 52) {
+    r += 0.15;
+    issues.push({
+      key: 'THERMAL_WARNING',
+      val: s.temp.toFixed(0) + '°C',
+      threshold: '50°C',
+      delta: '+' + (s.temp - 50).toFixed(0) + '°',
+    });
+  }
+  const risk = Math.min(1, Math.max(0, r));
+  return { risk, issues };
+}
+
+function computeRisk(s: TelemetryState): number {
+  return computeRiskAndIssues(s).risk;
+}
+
+interface AgentCardData {
+  severity: 'warn' | 'crit';
+  title: string;
+  body: string;
+  plan: { text: string; pri: string }[];
+  command: string;
+  issues: TelemetryIssue[];
+  risk: number;
+}
+
+function getAgentCard(s: TelemetryState, risk: number, issues: TelemetryIssue[]): AgentCardData | null {
+  if (issues.length === 0 || risk <= 0.38) return null;
+  const primary = issues[0];
+  if (risk > 0.78) {
+    if (primary.key.includes('BATTERY')) {
+      return {
+        severity: 'crit',
+        title: 'CRITICAL: Power Failure Imminent',
+        body: `Battery at ${primary.val} — estimated ${Math.max(1, Math.round(s.battery / 0.8))} seconds of flight remaining. Immediate RETURN_TO_HOME required to prevent total power loss.`,
+        plan: [
+          { text: 'Execute RETURN_TO_HOME command immediately', pri: 'high' },
+          { text: 'Reduce payload throttle by 30% to extend range', pri: 'high' },
+          { text: 'Alert ground crew for emergency retrieval', pri: 'med' },
+          { text: 'Log incident for post-flight battery audit', pri: 'low' },
+        ],
+        command: 'CMD: RETURN_TO_HOME — priority=CRITICAL reason=BATTERY_CRITICAL',
+        issues,
+        risk,
+      };
+    }
+    if (primary.key.includes('WIND')) {
+      return {
+        severity: 'crit',
+        title: 'CRITICAL: Wind Exceeds Safety Threshold',
+        body: `Wind speed ${primary.val} exceeds structural limit. Sustained exposure risks attitude loss and rotor stall. Initiating autonomous descent.`,
+        plan: [
+          { text: 'Descend to <40m altitude — wind speed lower at ground level', pri: 'high' },
+          { text: 'Orient nose into wind to reduce drag coefficient', pri: 'high' },
+          { text: 'Reduce forward velocity to 0 m/s — hover stabilization', pri: 'med' },
+          { text: 'Monitor for gust spikes >2 m/s variance', pri: 'low' },
+        ],
+        command: 'CMD: EMERGENCY_DESCENT alt=40m mode=HEADWIND_ORIENT',
+        issues,
+        risk,
+      };
+    }
+    return {
+      severity: 'crit',
+      title: 'CRITICAL: Structural Integrity Compromised',
+      body: `Wing stability at ${primary.val} — possible bird strike or rotor blade damage. Flight envelope severely reduced. STABILIZE and land immediately.`,
+      plan: [
+        { text: 'Engage autopilot stabilization routine', pri: 'high' },
+        { text: 'Reduce airspeed to minimum controllable', pri: 'high' },
+        { text: 'Find nearest clear landing zone within 200m', pri: 'med' },
+        { text: 'Initiate slow controlled descent — 1m/s rate', pri: 'med' },
+      ],
+      command: 'CMD: EMERGENCY_LAND mode=SLOW_DESCENT vspeed=1.0',
+      issues,
+      risk,
+    };
+  }
+  return {
+    severity: 'warn',
+    title: 'WARNING: ' + primary.key.replace(/_/g, ' '),
+    body: `Detected ${primary.key.replace(/_/g, ' ')} — current value ${primary.val} vs threshold ${primary.threshold}. Deviation: ${primary.delta}. Risk elevation without intervention.`,
+    plan: [
+      { text: 'Reduce operational envelope — lower speed and altitude', pri: 'med' },
+      { text: `Monitor ${primary.key} trend over next 30 seconds`, pri: 'med' },
+      { text: 'Prepare emergency procedure if condition worsens', pri: 'low' },
+    ],
+    command: 'CMD: ADVISORY reduce_envelope=true monitor=' + primary.key,
+    issues,
+    risk,
+  };
 }
 
 interface Cloud {
@@ -75,10 +225,11 @@ interface Particle {
 }
 
 export default function HomePage() {
+  const [mounted, setMounted] = useState(false);
   const [state, setState] = useState<TelemetryState>(initialState);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [selectedAgentCard, setSelectedAgentCard] = useState<AgentCardData | null>(null);
   const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const flightCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
   const simRef = useRef({
@@ -86,6 +237,7 @@ export default function HomePage() {
     y: 0,
     heading: 0,
     tick: 0,
+    worldScroll: 0,
     clouds: [] as Cloud[],
     birds: [] as Bird[],
     particles: [] as Particle[],
@@ -109,6 +261,8 @@ export default function HomePage() {
     ]);
     setState((prev) => ({ ...prev, totalEvents: prev.totalEvents + 1 }));
   };
+  const addLogRef = useRef(addLog);
+  addLogRef.current = addLog;
 
   const inject = (type: 'wind' | 'bird' | 'battery' | 'gps' | 'turbulence' | 'engine' | 'reset') => {
     setState((prev) => {
@@ -179,18 +333,45 @@ export default function HomePage() {
     });
   };
 
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Live agent decision log: add a new entry every few seconds based on current telemetry
+  useEffect(() => {
+    if (!mounted) return;
+    const id = setInterval(() => {
+      const S = stateRef.current;
+      const { risk, issues } = computeRiskAndIssues(S);
+      const log = addLogRef.current;
+      if (risk > 0.78) {
+        log(
+          'crit',
+          'crit',
+          `Agent: CRITICAL — Risk ${risk.toFixed(2)}. ${issues.map((i) => i.key).join(', ')}. Issuing emergency recommendation.`,
+        );
+      } else if (risk > 0.38) {
+        log(
+          'warn',
+          'warn',
+          `Agent: WARNING — Risk ${risk.toFixed(2)}. ${issues[0]?.key ?? 'Elevated'} — ${issues[0]?.val ?? 'monitoring'}. Advisory active.`,
+        );
+      } else {
+        log(
+          'ok',
+          'ok',
+          `Agent: Nominal. Risk ${risk.toFixed(2)} · Batt ${Math.round(S.battery)}% · Wind ${S.wind.toFixed(1)} m/s · Alt ${Math.round(S.alt)} m.`,
+        );
+      }
+    }, 2500);
+    return () => clearInterval(id);
+  }, [mounted]);
+
   // Resize canvases to fill containers
   useEffect(() => {
     function resize() {
       if (mainCanvasRef.current) {
         const el = mainCanvasRef.current;
-        const parent = el.parentElement;
-        if (!parent) return;
-        el.width = parent.clientWidth;
-        el.height = parent.clientHeight;
-      }
-      if (flightCanvasRef.current) {
-        const el = flightCanvasRef.current;
         const parent = el.parentElement;
         if (!parent) return;
         el.width = parent.clientWidth;
@@ -223,10 +404,8 @@ export default function HomePage() {
 
       if (!sim.cloudsInitialized || sim.clouds.length === 0) {
         sim.cloudsInitialized = true;
-        sim.x = w / 2;
-        sim.y = h * 0.55;
         sim.clouds = Array.from({ length: 8 }, () => ({
-          x: Math.random() * w,
+          x: Math.random() * (w + 400),
           y: 40 + Math.random() * 120,
           w: 60 + Math.random() * 80,
           spd: 0.2 + Math.random() * 0.3,
@@ -234,6 +413,16 @@ export default function HomePage() {
       }
 
       sim.tick += 1;
+      const scrollSpeed = 0.9;
+      sim.worldScroll += scrollSpeed;
+
+      // Drone fixed at center (flies right-to-left = world scrolls right)
+      sim.x = w / 2;
+      sim.y =
+        h * 0.45 -
+        (S.alt - 50) * 1.2 +
+        (S.stab < 0.75 ? Math.sin(sim.tick * 0.3) * 18 : 0);
+      sim.heading = -0.05;
 
       // Sky gradient
       const sky = ctx.createLinearGradient(0, 0, 0, h * 0.65);
@@ -260,16 +449,19 @@ export default function HomePage() {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Grid sky
+      // Grid sky (scrolls with world, right-to-left)
+      const gridStep = 40;
+      const scrollOff = sim.worldScroll % gridStep;
       ctx.strokeStyle = 'rgba(0,255,180,0.04)';
       ctx.lineWidth = 0.5;
-      for (let gx = 0; gx < w; gx += 40) {
+      for (let i = -1; i <= w / gridStep + 2; i++) {
+        const gx = i * gridStep - scrollOff;
         ctx.beginPath();
         ctx.moveTo(gx, 0);
         ctx.lineTo(gx, h * 0.65);
         ctx.stroke();
       }
-      for (let gy = 0; gy < h * 0.65; gy += 40) {
+      for (let gy = 0; gy < h * 0.65; gy += gridStep) {
         ctx.beginPath();
         ctx.moveTo(0, gy);
         ctx.lineTo(w, gy);
@@ -291,24 +483,28 @@ export default function HomePage() {
       ctx.font = '9px IBM Plex Mono, monospace';
       ctx.fillText(`${Math.round(S.alt)}m`, 4, altY - 3);
 
-      // Clouds
+      // Clouds (world space: move left with worldScroll, wrap when off left)
       sim.clouds.forEach((cl) => {
-        cl.x += cl.spd * (1 + S.wind / 20);
-        if (cl.x > w + cl.w) cl.x = -cl.w;
+        let screenX = cl.x - sim.worldScroll;
+        if (screenX < -cl.w - 50) {
+          cl.x += w + 2 * cl.w + 100;
+          screenX = cl.x - sim.worldScroll;
+        }
         const alpha = S.wind > 18 ? 0.12 : 0.07;
         ctx.fillStyle = `rgba(100,180,255,${alpha})`;
         ctx.beginPath();
-        ctx.ellipse(cl.x, cl.y, cl.w / 2, cl.w / 5, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX, cl.y, cl.w / 2, cl.w / 5, 0, 0, Math.PI * 2);
         ctx.fill();
       });
 
-      // Wind lines
+      // Wind lines (scroll with world)
       if (S.wind > 10) {
         const wIntensity = (S.wind - 10) / 20;
         for (let i = 0; i < 5; i++) {
           const wy = 80 + i * 60;
           const len = 30 + wIntensity * 60;
-          const offset = ((sim.tick * S.wind * 0.3 + i * 120) % (w + 100)) - 50;
+          const base = sim.tick * S.wind * 0.3 + i * 120 - sim.worldScroll;
+          const offset = ((base % (w + 100)) + (w + 100)) % (w + 100) - 50;
           ctx.strokeStyle = `rgba(77,184,255,${0.1 + wIntensity * 0.2})`;
           ctx.lineWidth = 0.8;
           ctx.setLineDash([len, 20 + Math.random() * 40]);
@@ -365,20 +561,6 @@ export default function HomePage() {
         ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
         ctx.fill();
       });
-
-      // Drone position (smooth follow)
-      const targetX =
-        w / 2 +
-        Math.sin(sim.tick * 0.012) * 180 +
-        (S.scenario === 'wind' ? Math.sin(sim.tick * 0.08) * 30 : 0);
-      const targetY =
-        h * 0.45 -
-        (S.alt - 50) * 1.2 +
-        Math.sin(sim.tick * 0.02) * 15 +
-        (S.stab < 0.75 ? Math.sin(sim.tick * 0.3) * 18 : 0);
-      sim.x += (targetX - sim.x) * 0.025;
-      sim.y += (targetY - sim.y) * 0.02;
-      sim.heading = Math.atan2(targetY - sim.y, targetX - sim.x);
 
       // Thrust rings (rotors)
       const rotorR = 14;
@@ -490,7 +672,9 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, []);
 
-  const uptimeSeconds = Math.floor((Date.now() - state.startTime) / 1000);
+  const uptimeSeconds = mounted
+    ? Math.floor((Date.now() - state.startTime) / 1000)
+    : 0;
   const minutes = String(Math.floor(uptimeSeconds / 60)).padStart(2, '0');
   const seconds = String(uptimeSeconds % 60).padStart(2, '0');
 
@@ -721,17 +905,9 @@ export default function HomePage() {
             ↺ RESET ALL SYSTEMS
           </button>
         </div>
-        <div className="map-section">
-          <div className="panel-header" style={{ padding: '6px 14px' }}>
-            <span className="accent">◎</span> FLIGHT PATH
-          </div>
-          <div className="map-canvas-wrap">
-            <canvas ref={flightCanvasRef} />
-          </div>
-        </div>
       </div>
 
-      {/* CENTER PANEL – main sim canvas + log stub */}
+      {/* CENTER PANEL – main sim canvas + log */}
       <div className="center-panel">
         <div className="panel-header">
           <span className="accent">◈</span> LIVE FLIGHT SIMULATION
@@ -770,22 +946,168 @@ export default function HomePage() {
           <span className="accent">◆</span> AI FLIGHT SAFETY AGENT
         </div>
         <div className="agent-section" id="agent-section">
-          <div
-            style={{
-              padding: '20px 12px',
-              textAlign: 'center',
-              fontFamily: 'var(--mono)',
-              fontSize: 10,
-              color: 'var(--text-dim)',
-            }}
-          >
-            Agent monitoring...
-            <br />
-            <br />
-            <div className="pulse-dot" style={{ margin: '0 auto' }} />
-          </div>
+          {(() => {
+            const { issues } = computeRiskAndIssues(state);
+            const card = getAgentCard(state, state.risk, issues);
+            if (!card) {
+              return (
+                <div
+                  style={{
+                    padding: '20px 12px',
+                    textAlign: 'center',
+                    fontFamily: 'var(--mono)',
+                    fontSize: 10,
+                    color: 'var(--text-dim)',
+                  }}
+                >
+                  Agent monitoring...
+                  <br />
+                  <br />
+                  <div className="pulse-dot" style={{ margin: '0 auto' }} />
+                </div>
+              );
+            }
+            return (
+              <div
+                className={`agent-card ${card.severity}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedAgentCard(card)}
+                onKeyDown={(e) => e.key === 'Enter' && setSelectedAgentCard(card)}
+              >
+                <div className="agent-card-header">
+                  <span className="agent-card-icon">
+                    {card.severity === 'crit' ? '⚠' : '▲'}
+                  </span>
+                  <span className="agent-card-title">{card.title}</span>
+                  <span
+                    className={`agent-card-score ${
+                      card.severity === 'crit'
+                        ? 'score-crit'
+                        : card.severity === 'warn'
+                          ? 'score-warn'
+                          : 'score-ok'
+                    }`}
+                  >
+                    {card.risk.toFixed(2)}
+                  </span>
+                </div>
+                <div className="agent-card-body">
+                  {card.body}
+                  <div className="evidence">
+                    {card.issues.map((e, i) => (
+                      <span key={e.key}>
+                        {i > 0 && ' · '}
+                        {e.key}: <span>{e.val}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="cmd-block">
+                  <div className="cmd-label">DECISION</div>
+                  {card.command}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
+
+      {/* Agent detail modal (when a card is clicked) */}
+      {selectedAgentCard && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => e.target === e.currentTarget && setSelectedAgentCard(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
+        >
+          <div className="modal">
+            <div className="modal-header">
+              <div>
+                <div className="modal-title" id="modal-title">
+                  {selectedAgentCard.title}
+                </div>
+                <div className="modal-sub">
+                  Risk score: {selectedAgentCard.risk.toFixed(3)} ·{' '}
+                  {new Date().toLocaleTimeString()}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setSelectedAgentCard(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-section">
+                <div className="modal-section-title">AGENT ANALYSIS</div>
+                <div className="modal-text">{selectedAgentCard.body}</div>
+              </div>
+              <div className="modal-section">
+                <div className="modal-section-title">EVIDENCE FROM TELEMETRY</div>
+                {selectedAgentCard.issues.map((e) => {
+                  const deltaNum = parseFloat(e.delta.replace(/[^0-9.-]/g, ''));
+                  const isDeltaOk = e.delta.startsWith('-') || deltaNum <= 0;
+                  return (
+                    <div key={e.key} className="evidence-row">
+                      <span className="ev-metric">{e.key}</span>
+                      <span className="ev-val">{e.val}</span>
+                      <span className="ev-threshold">thresh: {e.threshold}</span>
+                      <span className={`ev-delta ${isDeltaOk ? 'ok' : ''}`}>
+                        {e.delta}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="modal-section">
+                <div className="modal-section-title">INTERVENTION PLAN</div>
+                {selectedAgentCard.plan.map((p, i) => (
+                  <div key={i} className="plan-step">
+                    <span className="plan-num">
+                      {String(i + 1).padStart(2, '0')}
+                    </span>
+                    <span className="plan-text">{p.text}</span>
+                    <span className={`plan-priority pri-${p.pri}`}>
+                      {p.pri.toUpperCase()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="modal-section">
+                <div className="modal-section-title">COMMAND DECISION</div>
+                <div className="cmd-action-row">
+                  <span className="cmd-icon">▶</span>
+                  <span className="cmd-text">{selectedAgentCard.command}</span>
+                  <button
+                    type="button"
+                    className="cmd-execute-btn"
+                    onClick={() => {
+                      addLog(
+                        'cmd',
+                        'cmd',
+                        `Operator executed: ${selectedAgentCard.command}`,
+                      );
+                      addLog(
+                        'ok',
+                        'ok',
+                        'Agent: Command acknowledged — monitoring effect on flight parameters',
+                      );
+                      setSelectedAgentCard(null);
+                    }}
+                  >
+                    EXECUTE
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
