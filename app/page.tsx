@@ -229,6 +229,8 @@ export default function HomePage() {
   const [state, setState] = useState<TelemetryState>(initialState);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedAgentCard, setSelectedAgentCard] = useState<AgentCardData | null>(null);
+  type MetricKey = 'battery' | 'wind' | 'alt' | 'stab' | 'gps' | 'temp';
+  const [selectedMetric, setSelectedMetric] = useState<MetricKey | null>(null);
   const mainCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -717,6 +719,7 @@ export default function HomePage() {
           <button
             type="button"
             className="metric-card"
+            onClick={() => setSelectedMetric('battery')}
           >
             <div className="metric-label">Battery</div>
             <div className="metric-value">
@@ -740,6 +743,7 @@ export default function HomePage() {
           <button
             type="button"
             className="metric-card"
+            onClick={() => setSelectedMetric('wind')}
           >
             <div className="metric-label">Wind</div>
             <div className="metric-value">
@@ -763,6 +767,7 @@ export default function HomePage() {
           <button
             type="button"
             className="metric-card"
+            onClick={() => setSelectedMetric('alt')}
           >
             <div className="metric-label">Altitude</div>
             <div className="metric-value">
@@ -784,6 +789,7 @@ export default function HomePage() {
           <button
             type="button"
             className="metric-card"
+            onClick={() => setSelectedMetric('stab')}
           >
             <div className="metric-label">Wing Stab</div>
             <div className="metric-value">{state.stab.toFixed(2)}</div>
@@ -804,6 +810,7 @@ export default function HomePage() {
           <button
             type="button"
             className="metric-card"
+            onClick={() => setSelectedMetric('gps')}
           >
             <div className="metric-label">GPS Sig</div>
             <div className="metric-value">{state.gps.toFixed(2)}</div>
@@ -824,6 +831,7 @@ export default function HomePage() {
           <button
             type="button"
             className="metric-card"
+            onClick={() => setSelectedMetric('temp')}
           >
             <div className="metric-label">Temp</div>
             <div className="metric-value">
@@ -1012,6 +1020,103 @@ export default function HomePage() {
           })()}
         </div>
       </div>
+
+      {/* Telemetry detail modal (when a metric card is clicked) */}
+      {selectedMetric && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => e.target === e.currentTarget && setSelectedMetric(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="telemetry-modal-title"
+        >
+          <div className="modal">
+            <div className="modal-header">
+              <div>
+                <div className="modal-title" id="telemetry-modal-title">
+                  {selectedMetric === 'battery' && 'Battery Level'}
+                  {selectedMetric === 'wind' && 'Wind Speed'}
+                  {selectedMetric === 'alt' && 'Altitude'}
+                  {selectedMetric === 'stab' && 'Wing Stability'}
+                  {selectedMetric === 'gps' && 'GPS Signal'}
+                  {selectedMetric === 'temp' && 'Temperature'}
+                </div>
+                <div className="modal-sub">
+                  Live telemetry analysis · {new Date().toLocaleTimeString()}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setSelectedMetric(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="modal-section">
+                <div className="modal-section-title">CURRENT READING</div>
+                <div className="telemetry-value-large">
+                  {selectedMetric === 'battery' && `${state.battery.toFixed(1)}%`}
+                  {selectedMetric === 'wind' && `${state.wind.toFixed(1)} m/s`}
+                  {selectedMetric === 'alt' && `${state.alt.toFixed(0)} m`}
+                  {selectedMetric === 'stab' && state.stab.toFixed(3)}
+                  {selectedMetric === 'gps' && state.gps.toFixed(3)}
+                  {selectedMetric === 'temp' && `${state.temp.toFixed(0)}°C`}
+                </div>
+                <div className="modal-thresholds">
+                  {selectedMetric === 'battery' && 'Thresholds: WARN<20% CRIT<10%'}
+                  {selectedMetric === 'wind' && 'Thresholds: WARN>16 m/s CRIT>24 m/s'}
+                  {selectedMetric === 'alt' && 'Thresholds: SAFE 50–120 m'}
+                  {selectedMetric === 'stab' && 'Thresholds: WARN<0.82 CRIT<0.62'}
+                  {selectedMetric === 'gps' && 'Thresholds: WARN<0.5 CRIT<0.25'}
+                  {selectedMetric === 'temp' && 'Thresholds: WARN>45°C CRIT>55°C'}
+                </div>
+              </div>
+              <div className="modal-section">
+                <div className="modal-section-title">ANALYSIS</div>
+                <div className="modal-text">
+                  {selectedMetric === 'battery' &&
+                    (state.battery < 20
+                      ? `Battery at ${state.battery.toFixed(1)}%. Below warning threshold — return to base recommended.`
+                      : `Battery at ${state.battery.toFixed(1)}%. Nominal — estimated ${Math.round(state.battery * 1.2)} min remaining.`)}
+                  {selectedMetric === 'wind' &&
+                    (state.wind > 16
+                      ? `Wind speed ${state.wind.toFixed(1)} m/s. Above safe operational limit — altitude reduction recommended.`
+                      : `Wind speed ${state.wind.toFixed(1)} m/s. Within safe operating envelope.`)}
+                  {selectedMetric === 'alt' &&
+                    (state.alt > 120
+                      ? `Current altitude ${state.alt.toFixed(0)} m. Approaching regulatory ceiling.`
+                      : state.alt < 50
+                        ? `Current altitude ${state.alt.toFixed(0)} m. Low altitude — collision risk elevated.`
+                        : `Current altitude ${state.alt.toFixed(0)} m. Optimal flight band.`)}
+                  {selectedMetric === 'stab' &&
+                    (state.stab < 0.82
+                      ? `Wing stability index ${state.stab.toFixed(3)}. Degraded — possible mechanical or environmental cause.`
+                      : `Wing stability index ${state.stab.toFixed(3)}. Nominal aerodynamic performance.`)}
+                  {selectedMetric === 'gps' &&
+                    (state.gps < 0.5
+                      ? `GPS signal strength ${state.gps.toFixed(3)}. Reduced accuracy — position hold unreliable.`
+                      : `GPS signal strength ${state.gps.toFixed(3)}. Strong signal — full navigation available.`)}
+                  {selectedMetric === 'temp' &&
+                    (state.temp > 45
+                      ? `System temperature ${state.temp.toFixed(0)}°C. Elevated — thermal throttling may activate.`
+                      : `System temperature ${state.temp.toFixed(0)}°C. Within operational thermal limits.`)}
+                </div>
+              </div>
+              <div className="modal-section">
+                <div className="modal-section-title">
+                  RECENT HISTORY (LAST 20 READINGS)
+                </div>
+                <div className="modal-text modal-hint">
+                  Click on telemetry cards to view real-time trends.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Agent detail modal (when a card is clicked) */}
       {selectedAgentCard && (

@@ -565,6 +565,22 @@ body::before {
   color: var(--text);
   font-family: var(--sans);
 }
+.telemetry-value-large {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--green);
+  margin: 8px 0;
+}
+.modal-thresholds {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.modal-hint {
+  color: var(--text-dim);
+  font-size: 10px;
+}
 .evidence-row {
   display: flex;
   align-items: center;
