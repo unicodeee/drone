@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'nvidia/nemotron-nano-9b-v2:free';
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'nvidia/nvidia-nemotron-nano-9b-v2';
 
 const SYSTEM_PROMPT = `
 You are the Autonomous Flight Safety Monitor (AFSM) agent. Your task is to analyze drone telemetry and issue safety decisions in strict JSON format.
@@ -30,12 +30,21 @@ You must return a JSON object with this schema:
   "command": "string (MUST start with 'CMD: ', e.g., 'CMD: RETURN_TO_HOME')",
   "next_check_seconds": number
 }
+
+Return ONLY the JSON object. No markdown, no code fences, no explanation — just the raw JSON.
 `;
 
 function safeJsonParse(text: string) {
+    if (!text) return null;
     try {
         return JSON.parse(text);
     } catch {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+            try {
+                return JSON.parse(match[0]);
+            } catch {}
+        }
         return null;
     }
 }
@@ -54,10 +63,8 @@ function normalizeDecision(raw: any) {
     if (raw.agent !== 'safety_monitor') return null;
     if (!states.has(raw.safety_state)) return null;
     if (!actions.has(raw.recommended_action)) return null;
-
     if (!Array.isArray(raw.reasoning_bullets) || raw.reasoning_bullets.length < 1) return null;
 
-    // Be slightly more lenient with CMD: prefix if it's missing but value is known
     let command = typeof raw.command === 'string' ? raw.command : '';
     if (command && !command.startsWith('CMD:')) {
         command = 'CMD: ' + command;
@@ -66,7 +73,7 @@ function normalizeDecision(raw: any) {
 
     const triggered = Array.isArray(raw.triggered_rules) ? raw.triggered_rules : [];
 
-    const decision = {
+    return {
         agent: 'safety_monitor' as const,
         safety_state: raw.safety_state as 'NOMINAL' | 'WARNING' | 'CRITICAL',
         risk_score: clamp01(Number(raw.risk_score)),
@@ -87,64 +94,86 @@ function normalizeDecision(raw: any) {
             }
             : { alt_m: undefined, landing_zone: undefined, home: undefined },
         reasoning_bullets: raw.reasoning_bullets.map((x: any) => String(x)).slice(0, 5),
-        command: command,
+        command,
         next_check_seconds: Math.max(2, Math.min(30, Number(raw.next_check_seconds ?? 5))),
     };
-
-    return decision;
 }
 
-async function callOpenRouter(payload: any) {
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/alex-p-gates/afsm-monitor',
-            'X-Title': 'AFSM Monitor',
-        },
-        body: JSON.stringify({
-            model: OPENROUTER_MODEL,
-            temperature: 0.2,
-            max_tokens: 450,
-            messages: [
-                { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user', content: `Current Telemetry: ${JSON.stringify(payload.telemetry)}\nIssues Detected: ${JSON.stringify(payload.issues)}\nTrigger Event: ${payload.trigger}` }
-            ],
-            response_format: { type: 'json_object' }
-        }),
-    });
+async function callNvidia(payload: any) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90_000);
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`OpenRouter API error: ${response.status} ${errorText}`);
+    try {
+        const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: NVIDIA_MODEL,
+                temperature: 0.6,
+                top_p: 0.95,
+                max_tokens: 2048,
+                frequency_penalty: 0,
+                presence_penalty: 0,
+                // stream must be false — streaming requires a different response handler
+                stream: false,
+                messages: [
+                    { role: 'system', content: SYSTEM_PROMPT },
+                    {
+                        role: 'user',
+                        content: `Current Telemetry: ${JSON.stringify(payload.telemetry)}\nIssues Detected: ${JSON.stringify(payload.issues)}\nTrigger Event: ${payload.trigger}\n\nRespond with only a JSON object matching the schema above.`,
+                    },
+                ],
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`NVIDIA API error: ${response.status} ${errorText}`);
+        }
+
+        const data = await response.json();
+
+        // The thinking model returns reasoning_content separately from content.
+        // We only want the final content (the JSON), not the thinking tokens.
+        const message = data.choices?.[0]?.message;
+        const content: string = message?.content ?? message?.reasoning_content ?? '';
+
+        if (!content) {
+            console.error('Empty content from NVIDIA API. Full response:', JSON.stringify(data));
+            return null;
+        }
+
+        const parsed = safeJsonParse(content);
+        if (!parsed) console.error('JSON parse failed. Raw content:', content);
+        return parsed;
+    } finally {
+        clearTimeout(timeout);
     }
-
-    const data = await response.json();
-    const content = data.choices[0].message.content;
-    return safeJsonParse(content);
 }
 
 export async function POST(request: Request) {
     try {
         const payload = await request.json();
 
-        if (!OPENROUTER_API_KEY) {
-            return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
+        if (!NVIDIA_API_KEY) {
+            return NextResponse.json({ error: 'NVIDIA_API_KEY not configured' }, { status: 500 });
         }
 
         let decision: any = null;
-        let attempts = 0;
 
-        while (attempts < 2) {
+        for (let attempt = 0; attempt < 2; attempt++) {
             try {
-                const raw = await callOpenRouter(payload);
+                const raw = await callNvidia(payload);
                 decision = normalizeDecision(raw);
                 if (decision) break;
+                console.error(`Attempt ${attempt + 1}: normalizeDecision returned null, raw was:`, raw);
             } catch (e) {
-                console.error(`Attempt ${attempts + 1} failed:`, e);
+                console.error(`Attempt ${attempt + 1} failed:`, e);
             }
-            attempts++;
         }
 
         if (!decision) {
